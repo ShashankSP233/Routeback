@@ -263,6 +263,29 @@ def access_voucher(user: User, voucher: Voucher) -> bool:
         return True
     return user.role in {Role.ADMIN, Role.HR, Role.ACCOUNTS}
 
+
+def next_voucher_id(db: Session) -> str:
+    """Generate a monthly sequence while preventing concurrent duplicate IDs."""
+    now = datetime.now().astimezone()
+    prefix = f"TRV-{now:%m%y}-"
+    lock_key = int(now.strftime("%Y%m"))
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(CAST(:lock_key AS BIGINT))"),
+        {"lock_key": lock_key},
+    )
+    existing_ids = db.scalars(
+        select(Voucher.id).where(Voucher.id.like(f"{prefix}%"))
+    ).all()
+    last_number = max(
+        (
+            int(voucher_id[len(prefix) :])
+            for voucher_id in existing_ids
+            if voucher_id[len(prefix) :].isdigit()
+        ),
+        default=0,
+    )
+    return f"{prefix}{last_number + 1:05d}"
+
 def get_voucher(db: Session, voucher_id: str) -> Voucher:
     v = db.scalar(
         select(Voucher)
@@ -540,6 +563,7 @@ def create_voucher(
         if not project or not project.active:
             raise HTTPException(422, "Choose an active project")
     voucher = Voucher(
+        id=next_voucher_id(db),
         employee_id=user.id,
         project_id=project.id if project else None,
         origin=data.origin.strip() if data.origin and data.origin.strip() else None,

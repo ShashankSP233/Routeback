@@ -2,6 +2,8 @@
 
 RouteBack is a standalone reimbursement app for trips to a site and back. It uses a Python/FastAPI server and PostgreSQL, serves the browser app and API together at `http://localhost:3080`, and keeps voucher data on the server. It has its own accounts today; its user IDs and role names are kept simple so they can later be mapped to an HR/ERP platform.
 
+New voucher numbers use `TRV-MMYY-00001`, with the sequence restarting each month. Existing voucher numbers are retained.
+
 ## Start locally
 
 Requires Python 3.11 or newer and PostgreSQL.

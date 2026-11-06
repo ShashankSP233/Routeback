@@ -62,9 +62,7 @@ class Project(Base):
 class Voucher(Base):
     __tablename__ = "travel_vouchers"
 
-    id: Mapped[str] = mapped_column(
-        String(30), primary_key=True, default=lambda: "TV-" + uuid4().hex[:10].upper()
-    )
+    id: Mapped[str] = mapped_column(String(30), primary_key=True)
     employee_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), index=True
     )
