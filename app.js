@@ -26,12 +26,15 @@ const S = {
   user: null,
   mine: [],
   queue: [],
+  allVouchers: [],
   users: [],
   projects: [],
   proofFiles: [],
   expenseItems: [],
   view: "dashboard",
   query: "",
+  statusFilter: "",
+  paymentTab: "action",
 };
 const roleNames = {
   employee: "Employee",
@@ -141,6 +144,7 @@ async function load() {
   S.user = d.user;
   S.mine = d.mine.map(normalise);
   S.queue = d.queue.map(normalise);
+  S.allVouchers = (d.all_vouchers || []).map(normalise);
   S.projects = projects;
   showApp();
   render();
@@ -237,48 +241,90 @@ function actionFor(v) {
     return ["confirm_receipt", "Confirm I received payment"];
   return null;
 }
+function metricCard(label, value, note, icon) {
+  return `<div class="metric"><div class="metric-top"><span class="metric-label">${label}</span><span class="metric-icon">${icon}</span></div><div class="metric-value">${value}</div><div class="metric-note">${note}</div></div>`;
+}
+function applyVoucherFilters(items) {
+  const query = S.query.trim().toLowerCase();
+  return items.filter((v) => {
+    const haystack = `${v.id} ${v.owner} ${v.from} ${v.to} ${v.purpose} ${v.status} ${v.project || ""}`.toLowerCase();
+    return (!query || haystack.includes(query)) && (!S.statusFilter || v.status === S.statusFilter);
+  });
+}
+function statusFilter(items) {
+  const allStatuses = ["HR review", "Admin approval", "Accounts review", "Payment processing", "Payment received", "Closed", "Rejected"];
+  const present = new Set(items.map((v) => v.status));
+  return `<select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option>${allStatuses.filter((status) => present.has(status)).map((status) => `<option value="${esc(status)}" ${S.statusFilter === status ? "selected" : ""}>${esc(status)}</option>`).join("")}</select>`;
+}
+function voucherFilters(items, placeholder, countLabel) {
+  return `<div class="filters"><input id="search" placeholder="${placeholder}" value="${esc(S.query)}">${statusFilter(items)}<span class="spacer"></span><span class="subhead">${countLabel}</span></div>`;
+}
 function dashboard() {
-  let pending = S.mine.filter(
-      (v) => !["Closed", "Rejected"].includes(v.status),
-    ),
-    paid = S.mine.filter((v) => v.status === "Closed"),
-    sum = S.mine.reduce((a, v) => a + v.total, 0),
-    recent = [...S.mine].slice(0, 5),
-    next = S.queue[0] || S.mine.find((v) => v.status !== "Closed");
-  let actionCount = S.queue.filter((v) => actionFor(v)).length;
-  return `${pageHead("SITE TRAVEL CLAIMS", `Welcome, ${esc(S.user.display_name.split(" ")[0])}`, "Your site travel vouchers and reimbursement status.", `<button class="btn btn-primary" id="newVoucher">＋ New voucher</button>`)}<section class="metrics"><div class="metric"><div class="metric-top"><span class="metric-label">MY VOUCHERS</span><span class="metric-icon">▤</span></div><div class="metric-value">${S.mine.length}</div><div class="metric-note">Submitted by you</div></div><div class="metric"><div class="metric-top"><span class="metric-label">IN PROGRESS</span><span class="metric-icon">◷</span></div><div class="metric-value">${pending.length}</div><div class="metric-note">Waiting for a review or payment</div></div><div class="metric"><div class="metric-top"><span class="metric-label">CLOSED</span><span class="metric-icon">✓</span></div><div class="metric-value">${paid.length}</div><div class="metric-note">Payment confirmed by you</div></div><div class="metric"><div class="metric-top"><span class="metric-label">TOTAL CLAIMED</span><span class="metric-icon">₹</span></div><div class="metric-value">${money(sum)}</div><div class="metric-note">Across your vouchers</div></div></section>${
-    S.user.role === "employee"
-      ? `<section class="content-grid"><div class="card"><div class="card-head"><div><h2>My recent vouchers</h2><p>Your claims and their current status</p></div><button class="text-link" data-view="vouchers">See all →</button></div><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Journey</th><th>Purpose</th><th>Claim</th><th>Status</th><th></th></tr></thead><tbody>${recent.map(row).join("") || `<tr><td colspan="6" class="empty">You haven’t submitted a travel voucher yet.</td></tr>`}</tbody></table></div></div><div class="card"><div class="card-head"><div><h2>Approval journey</h2><p>Every claim follows the same sequence</p></div></div>${timeline(next)}</div></section>`
-      : `<section class="content-grid"><div class="card"><div class="card-head"><div><h2>My recent vouchers</h2><p>Your own travel claims</p></div><button class="text-link" data-view="vouchers">See all →</button></div><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Journey</th><th>Purpose</th><th>Claim</th><th>Status</th><th></th></tr></thead><tbody>${recent.map(row).join("") || `<tr><td colspan="6" class="empty">No vouchers submitted by you.</td></tr>`}</tbody></table></div></div><div class="card"><div class="card-head"><div><h2>Review queue</h2><p>${actionCount} voucher${actionCount === 1 ? "" : "s"} ready for your role</p></div><button class="text-link" data-view="approvals">Open queue →</button></div><div class="timeline">${
-          S.queue
-            .slice(0, 4)
-            .map(
-              (v) =>
-                `<div class="step current"><div class="step-dot">•</div><div><b>${esc(v.id)} · ${esc(v.owner)}</b><small>${esc(v.purpose)} · ${v.status}</small></div></div>`,
-            )
-            .join("") ||
-          `<div class="empty">No vouchers currently need your review.</div>`
-        }</div></div></section>`
-  }<section class="content-grid" style="margin-top:16px"><div class="card"><div class="card-head"><div><h2>Reimbursement steps</h2><p>From site trip to confirmed payment</p></div></div><div class="timeline"><div class="step"><div class="step-dot">1</div><div><b>Employee submits journey, costs and proofs</b><small>Only the submitting employee can view and confirm their own claim.</small></div></div><div class="step"><div class="step-dot">2</div><div><b>HR verifies the claim</b><small>Travel route, purpose, expense details and supporting bills.</small></div></div><div class="step"><div class="step-dot">3</div><div><b>Admin approval · Vipul Sir</b><small>Approved vouchers move to Accounts.</small></div></div><div class="step"><div class="step-dot">4</div><div><b>Accounts approves and records payment</b><small>Employee confirms receipt to close the voucher.</small></div></div></div></div><div class="card"><div class="card-head"><div><h2>Keep proofs ready</h2><p>Receipts and tickets help speed up review.</p></div></div><div class="detail-body"><div class="banner">Attach receipts, tickets, tolls, parking bills and other site travel proofs with each voucher.</div><button class="btn btn-primary" id="newVoucher2">＋ Create a travel voucher</button></div></div></section>`;
+  const isEmployee = S.user.role === "employee";
+  const isAdmin = S.user.role === "admin";
+  const global = S.allVouchers;
+  const scope = isEmployee ? S.mine : global;
+  const inProgress = scope.filter((v) => !["Closed", "Rejected"].includes(v.status));
+  const closed = scope.filter((v) => v.status === "Closed");
+  const total = scope.reduce((sum, v) => sum + v.total, 0);
+  const recent = (isEmployee ? S.mine : global).slice(0, 5);
+  const queue = S.queue.filter((v) => actionFor(v));
+  const kpis = isAdmin
+    ? [
+        metricCard("ALL VOUCHERS", global.length, "Across every employee", "▤"),
+        metricCard("MY VOUCHERS", S.mine.length, "Submitted by you", "♙"),
+        metricCard("IN PROGRESS", inProgress.length, "Across all employees", "◷"),
+        metricCard("CLOSED", closed.length, "Payment confirmed", "✓"),
+        metricCard("TOTAL CLAIMED", money(total), "Across all vouchers", "₹"),
+      ].join("")
+    : isEmployee
+      ? [
+          metricCard("MY VOUCHERS", S.mine.length, "Submitted by you", "▤"),
+          metricCard("IN PROGRESS", inProgress.length, "Waiting for a review or payment", "◷"),
+          metricCard("CLOSED", closed.length, "Payment confirmed by you", "✓"),
+          metricCard("TOTAL CLAIMED", money(total), "Across your vouchers", "₹"),
+        ].join("")
+      : [
+          metricCard("ALL VOUCHERS", global.length, "Across every employee", "▤"),
+          metricCard("IN PROGRESS", inProgress.length, "Awaiting review or payment", "◷"),
+          metricCard("CLOSED", closed.length, "Payment confirmed", "✓"),
+          metricCard("TOTAL CLAIMED", money(total), "Across all vouchers", "₹"),
+        ].join("");
+  const recentRows = isEmployee
+    ? recent.map(row).join("")
+    : recent.map((v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${route(v)}</td><td>${esc(v.purpose)}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`).join("");
+  const recentHeading = isEmployee ? "My recent vouchers" : "Recent vouchers";
+  const recentSubheading = isEmployee ? "Your claims and their current status" : "Latest claims across all employees";
+  const recentLink = isEmployee ? "vouchers" : "allVouchers";
+  const recentHeaders = isEmployee
+    ? "<th>Voucher</th><th>Journey</th><th>Purpose</th><th>Claim</th><th>Status</th><th></th>"
+    : "<th>Voucher</th><th>Employee</th><th>Journey</th><th>Purpose</th><th>Claim</th><th>Status</th><th></th>";
+  const recentEmpty = isEmployee ? "You haven’t submitted a travel voucher yet." : "No vouchers have been submitted yet.";
+  const next = S.queue[0] || S.mine.find((v) => !["Closed", "Rejected"].includes(v.status));
+  return `${pageHead("SITE TRAVEL CLAIMS", `Welcome, ${esc(S.user.display_name.split(" ")[0])}`, "Your site travel vouchers and reimbursement status.", '<button class="btn btn-primary" id="newVoucher">＋ New voucher</button>')}<section class="metrics ${isAdmin ? "metrics-global" : ""}">${kpis}</section><section class="content-grid"><div class="card"><div class="card-head"><div><h2>${recentHeading}</h2><p>${recentSubheading}</p></div><button class="text-link" data-view="${recentLink}">See all →</button></div><div class="table-wrap"><table><thead><tr>${recentHeaders}</tr></thead><tbody>${recentRows || `<tr><td colspan="${isEmployee ? 6 : 7}" class="empty">${recentEmpty}</td></tr>`}</tbody></table></div></div><div class="card"><div class="card-head"><div><h2>${isEmployee ? "Approval journey" : "Review queue"}</h2><p>${isEmployee ? "Every claim follows the same sequence" : `${queue.length} voucher${queue.length === 1 ? "" : "s"} need your action`}</p></div>${isEmployee ? "" : '<button class="text-link" data-view="approvals">Open queue →</button>'}</div>${isEmployee ? timeline(next) : `<div class="timeline">${queue.slice(0, 4).map((v) => `<div class="step current"><div class="step-dot">•</div><div><b>${esc(v.id)} · ${esc(v.owner)}</b><small>${esc(v.purpose)} · ${esc(v.status)}</small></div></div>`).join("") || '<div class="empty">No vouchers currently need your review.</div>'}</div>`}</div></section><section class="content-grid" style="margin-top:16px"><div class="card"><div class="card-head"><div><h2>Reimbursement steps</h2><p>From site trip to confirmed payment</p></div></div><div class="timeline"><div class="step"><div class="step-dot">1</div><div><b>Employee submits journey, costs and proofs</b><small>Only the submitting employee can view and confirm their own claim.</small></div></div><div class="step"><div class="step-dot">2</div><div><b>HR verifies the claim</b><small>Travel route, purpose, expense details and supporting bills.</small></div></div><div class="step"><div class="step-dot">3</div><div><b>Admin approval · Vipul Sir</b><small>Approved vouchers move to Accounts.</small></div></div><div class="step"><div class="step-dot">4</div><div><b>Accounts approves and records payment</b><small>Employee confirms receipt to close the voucher.</small></div></div></div></div><div class="card"><div class="card-head"><div><h2>Keep proofs ready</h2><p>Receipts and tickets help speed up review.</p></div></div><div class="detail-body"><div class="banner">Attach receipts, tickets, tolls, parking bills and other site travel proofs with each voucher.</div><button class="btn btn-primary" id="newVoucher2">＋ Create a travel voucher</button></div></div></section>`;
 }
 function vouchersPage() {
-  let rows = S.mine.filter((v) =>
-    `${v.id} ${v.to} ${v.purpose} ${v.status}`
-      .toLowerCase()
-      .includes(S.query.toLowerCase()),
-  );
-  return `${pageHead("YOUR CLAIMS", "My vouchers", "Only vouchers submitted under your account appear here.", '<button class="btn btn-primary" id="newVoucher">＋ New voucher</button>')}<div class="filters"><input id="search" placeholder="Search vouchers, journeys…" value="${esc(S.query)}"><span class="spacer"></span><span class="subhead">${rows.length} vouchers · INR</span></div><div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Journey</th><th>Purpose</th><th>Claim amount</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows.map(row).join("") || '<tr><td colspan="6" class="empty">No vouchers match this search.</td></tr>'}</tbody></table></div></div>`;
+  const rows = applyVoucherFilters(S.mine);
+  return `${pageHead("YOUR CLAIMS", "My vouchers", "Vouchers submitted under your account.", '<button class="btn btn-primary" id="newVoucher">＋ New voucher</button>')}${voucherFilters(S.mine, "Search voucher, journey or purpose…", `${rows.length} of ${S.mine.length} vouchers`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Journey</th><th>Purpose</th><th>Claim amount</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows.map(row).join("") || '<tr><td colspan="6" class="empty">No vouchers match these filters.</td></tr>'}</tbody></table></div></div>`;
+}
+function allVouchersPage() {
+  const rows = applyVoucherFilters(S.allVouchers);
+  const allRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${route(v)}</td><td>${esc(v.purpose)}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`;
+  return `${pageHead("VOUCHER REGISTER", "All vouchers", "Follow every employee voucher through review, payment and closure.", "")}${voucherFilters(S.allVouchers, "Search voucher, employee or journey…", `${rows.length} of ${S.allVouchers.length} vouchers`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee</th><th>Journey</th><th>Purpose</th><th>Claim</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(allRow).join("") || '<tr><td colspan="7" class="empty">No vouchers match these filters.</td></tr>'}</tbody></table></div></div>`;
 }
 function approvalsPage() {
-  return `${pageHead("REVIEW CENTRE", "Approval queue", "Vouchers currently awaiting your role’s review.", "")}<div class="card table-card"><div class="card-head"><div><h2>Vouchers for review</h2><p>${S.queue.length} pending claims in your queue</p></div></div><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee & journey</th><th>Purpose</th><th>Claim</th><th>Stage</th><th>Action</th></tr></thead><tbody>${S.queue.map(row).join("") || '<tr><td colspan="6" class="empty">No vouchers are waiting in your queue.</td></tr>'}</tbody></table></div></div>`;
+  const rows = applyVoucherFilters(S.queue);
+  return `${pageHead("REVIEW CENTRE", "Approval queue", "Vouchers currently awaiting your role’s action.", "")}${voucherFilters(S.queue, "Search voucher, employee or purpose…", `${rows.length} of ${S.queue.length} actions`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee & journey</th><th>Purpose</th><th>Claim</th><th>Stage</th><th>Action</th></tr></thead><tbody>${rows.map(row).join("") || '<tr><td colspan="6" class="empty">No vouchers match these filters.</td></tr>'}</tbody></table></div></div>`;
 }
 function paymentsPage() {
-  let rows = [...S.mine, ...S.queue].filter((v) =>
-    ["Payment processing", "Payment received", "Closed"].includes(v.status),
-  );
-  return `${pageHead("REIMBURSEMENTS", "Payments", "Accounts records payment. Each employee confirms their own payment.", "")}<div class="card table-card"><div class="card-head"><div><h2>Payment tracker</h2><p>Payment reference and receipt status</p></div></div><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Journey</th><th>Purpose</th><th>Amount</th><th>Payment status</th><th></th></tr></thead><tbody>${rows.map(row).join("") || '<tr><td colspan="6" class="empty">No payment records yet.</td></tr>'}</tbody></table></div></div>`;
-}
-function usersPage() {
+  const source = S.user.role === "employee" ? S.mine : S.allVouchers;
+  const history = source;
+  const actionable = source.filter((v) => actionFor(v));
+  const selected = S.paymentTab === "history" ? history : actionable;
+  const rows = applyVoucherFilters(selected);
+  const paymentRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${route(v)}</td><td>${esc(v.purpose)}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`;
+  return `${pageHead("REIMBURSEMENTS", "Payments", "Track every voucher and focus on the actions waiting for your role.", "")}<div class="view-tabs" role="tablist"><button class="view-tab ${S.paymentTab === "action" ? "active" : ""}" data-payment-tab="action">Action required <span>${actionable.length}</span></button><button class="view-tab ${S.paymentTab === "history" ? "active" : ""}" data-payment-tab="history">All vouchers <span>${history.length}</span></button></div>${voucherFilters(selected, "Search voucher, employee or journey…", `${rows.length} of ${selected.length} records`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee</th><th>Journey</th><th>Purpose</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(paymentRow).join("") || `<tr><td colspan="7" class="empty">${S.paymentTab === "action" ? "No vouchers currently need your action." : "No voucher records match these filters."}</td></tr>`}</tbody></table></div></div>`;
+}function usersPage() {
   return `${pageHead("ADMINISTRATION", "People & roles", "Create employee accounts and assign HR, Admin or Accounts access.", "")}<section class="card" style="margin-bottom:14px"><div class="card-head"><div><h2>Add a user</h2><p>Each person receives an individual sign-in and sees their own vouchers.</p></div></div><form id="userForm" class="detail-body form-grid" novalidate><div class="form-field"><label>Full name</label><input name="display_name" maxlength="200" placeholder="e.g. Human Resources"></div><div class="form-field"><label>Username</label><input name="username" maxlength="120" autocomplete="off" placeholder="e.g. hr or human.resources"><small class="form-hint">Use letters, numbers, dots, underscores or hyphens. Spaces are converted to dots.</small></div><div class="form-field"><label>Role</label><select name="role"><option value="employee">Employee</option><option value="hr">HR</option><option value="admin">Admin</option><option value="accounts">Accounts</option></select><small class="form-hint">Choose HR, Admin or Accounts when adding a reviewer.</small></div><div class="form-field"><label>Password · 8–12 characters, include letters and numbers</label><input name="password" type="password" maxlength="12" autocomplete="new-password"></div><div class="form-field full"><div id="userError" class="login-error" role="alert"></div><button class="btn btn-primary" type="submit">＋ Create account</button></div></form></section><section class="card"><div class="card-head"><div><h2>All user accounts</h2><p>${S.users.length} total · Each HR and Accounts role can be assigned to multiple people.</p></div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Access</th><th>Update</th></tr></thead><tbody>${S.users
     .map(
       (u) =>
@@ -308,9 +354,10 @@ async function refreshProjects() {
   S.projects = await api("/projects");
 }
 async function render() {
-  let names = {
+  const names = {
     dashboard: "Overview",
     vouchers: "My vouchers",
+    allVouchers: "All vouchers",
     approvals: "Approvals",
     payments: "Payments",
     people: "People & roles",
@@ -320,106 +367,81 @@ async function render() {
   $("#crumb").textContent = names[S.view] || "Overview";
   $("#sideName").textContent = S.user.display_name;
   $("#sideRole").textContent = roleNames[S.user.role] || S.user.role;
-  $("#sideAvatar").textContent = S.user.display_name
-    .split(/\s+/)
-    .map((x) => x[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
+  $("#sideAvatar").textContent = S.user.display_name.split(/\s+/).map((x) => x[0]).slice(0, 2).join("").toUpperCase();
   $("#topAvatar").textContent = $("#sideAvatar").textContent;
   $("#topName").textContent = S.user.display_name;
-  $("#usersNav").classList.toggle("hidden", S.user.role !== "admin");
-  $("#projectsNav").classList.toggle("hidden", S.user.role !== "admin");
-  let canReview = ["hr", "admin", "accounts"].includes(S.user.role);
+  const isAdmin = S.user.role === "admin";
+  const canSeeAll = ["admin", "hr", "accounts"].includes(S.user.role);
+  $("#usersNav").classList.toggle("hidden", !isAdmin);
+  $("#projectsNav").classList.toggle("hidden", !isAdmin);
+  $("#allVouchersNav").classList.toggle("hidden", !canSeeAll);
+  const canReview = ["hr", "admin", "accounts"].includes(S.user.role);
   $("#approvalsNav").classList.toggle("hidden", !canReview);
-  $("#approvalCount").textContent = S.queue.length;
+  $("#approvalCount").textContent = S.queue.filter((v) => actionFor(v)).length;
   $("#myCount").textContent = S.mine.length;
-  let mobile = [
-    ["dashboard", "⌂", "Home"],
-    ["vouchers", "▤", "Vouchers"],
-  ];
+  const mobile = [["dashboard", "⌂", "Home"], ["vouchers", "▤", "Vouchers"]];
+  if (canSeeAll) mobile.push(["allVouchers", "▤", "All"]);
   if (canReview) mobile.push(["approvals", "☷", "Review"]);
   mobile.push(["payments", "₹", "Payments"]);
-  if (S.user.role === "admin") {
-    mobile.push(["people", "♙", "People"]);
-    mobile.push(["projects", "⌂", "Projects"]);
-  }
-  $("#mobileNav").innerHTML =
-    mobile
-      .map(
-        ([id, icon, label]) =>
-          `<button class="mobile-nav-item ${S.view === id ? "active" : ""}" data-view="${id}"><span>${icon}</span>${label}</button>`,
-      )
-      .join("") +
-    `<button class="mobile-nav-item mobile-add" id="mobileNew"><span>＋</span>New</button>`;
-  if (S.view === "people" && S.user.role === "admin") await refreshUsers();
-  if (S.view === "projects" && S.user.role === "admin") await refreshProjects();
-  $("#page").innerHTML =
-    S.view === "dashboard"
-      ? dashboard()
-      : S.view === "vouchers"
-        ? vouchersPage()
-        : S.view === "approvals"
-          ? approvalsPage()
-          : S.view === "payments"
-            ? paymentsPage()
-            : S.view === "people" && S.user.role === "admin"
-              ? usersPage()
-              : S.view === "projects" && S.user.role === "admin"
-                ? projectsPage()
-              : miscPage();
+  if (isAdmin) mobile.push(["people", "♙", "People"], ["projects", "⌂", "Projects"]);
+  $("#mobileNav").innerHTML = mobile.map(([id, icon, label]) => `<button class="mobile-nav-item ${S.view === id ? "active" : ""}" data-view="${id}"><span>${icon}</span>${label}</button>`).join("") + `<button class="mobile-nav-item mobile-add" id="mobileNew"><span>＋</span>New</button>`;
+  if (S.view === "people" && isAdmin) await refreshUsers();
+  if (S.view === "projects" && isAdmin) await refreshProjects();
+  const pages = {
+    dashboard,
+    vouchers: vouchersPage,
+    allVouchers: canSeeAll ? allVouchersPage : miscPage,
+    approvals: canReview ? approvalsPage : miscPage,
+    payments: paymentsPage,
+    people: isAdmin ? usersPage : miscPage,
+    projects: isAdmin ? projectsPage : miscPage,
+    policy: miscPage,
+  };
+  $("#page").innerHTML = (pages[S.view] || miscPage)();
   bindPage();
 }
 function bindPage() {
-  document.querySelectorAll("[data-view]").forEach((b) => {
-    b.classList.toggle("active", b.dataset.view === S.view);
-    b.onclick = (e) => {
-      e.preventDefault();
-      S.view = b.dataset.view;
+  document.querySelectorAll("[data-view]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.view === S.view);
+    button.onclick = (event) => {
+      event.preventDefault();
+      S.view = button.dataset.view;
       S.query = "";
+      S.statusFilter = "";
       render();
     };
   });
-  document
-    .querySelectorAll("#newVoucher,#newVoucher2")
-    .forEach((b) => (b.onclick = showCreate));
-  let mobileNew = $("#mobileNew");
-  if (mobileNew) mobileNew.onclick = showCreate;
-  document
-    .querySelectorAll("[data-open]")
-    .forEach((b) => (b.onclick = () => openDetail(b.dataset.open)));
-  let search = $("#search");
-  if (search)
-    search.oninput = () => {
-      S.query = search.value;
-      let p = search.selectionStart;
-      render().then(() => {
-        let n = $("#search");
-        if (n) {
-          n.focus();
-          n.setSelectionRange(p, p);
-        }
-      });
+  document.querySelectorAll("[data-payment-tab]").forEach((button) => {
+    button.onclick = () => {
+      S.paymentTab = button.dataset.paymentTab;
+      S.query = "";
+      S.statusFilter = "";
+      render();
     };
-  let form = $("#userForm");
+  });
+  document.querySelectorAll("#newVoucher,#newVoucher2").forEach((button) => (button.onclick = showCreate));
+  const mobileNew = $("#mobileNew");
+  if (mobileNew) mobileNew.onclick = showCreate;
+  document.querySelectorAll("[data-open]").forEach((button) => (button.onclick = () => openDetail(button.dataset.open)));
+  const search = $("#search");
+  if (search) search.oninput = () => {
+    S.query = search.value;
+    const position = search.selectionStart;
+    render().then(() => {
+      const next = $("#search");
+      if (next) { next.focus(); next.setSelectionRange(position, position); }
+    });
+  };
+  const status = $("#statusFilter");
+  if (status) status.onchange = () => { S.statusFilter = status.value; render(); };
+  const form = $("#userForm");
   if (form) form.onsubmit = createUser;
-  let projectForm = $("#projectForm");
+  const projectForm = $("#projectForm");
   if (projectForm) projectForm.onsubmit = createProject;
-  document
-    .querySelectorAll("[data-user-save]")
-    .forEach((b) => (b.onclick = () => saveUser(b.dataset.userSave)));
-  document
-    .querySelectorAll("[data-user-reset]")
-    .forEach((b) => (b.onclick = () => resetPassword(b.dataset.userReset)));
-  document
-    .querySelectorAll("[data-user-toggle]")
-    .forEach(
-      (b) =>
-        (b.onclick = () =>
-          toggleUser(b.dataset.userToggle, b.dataset.active === "true")),
-    );
-}
-function modal(content, id, stack = false) {
+  document.querySelectorAll("[data-user-save]").forEach((button) => (button.onclick = () => saveUser(button.dataset.userSave)));
+  document.querySelectorAll("[data-user-reset]").forEach((button) => (button.onclick = () => resetPassword(button.dataset.userReset)));
+  document.querySelectorAll("[data-user-toggle]").forEach((button) => (button.onclick = () => toggleUser(button.dataset.userToggle, button.dataset.active === "true")));
+}function modal(content, id, stack = false) {
   const root = $("#modalRoot");
   const markup = `<div class="modal-backdrop" id="${id}">${content}</div>`;
   if (stack) root.insertAdjacentHTML("beforeend", markup);

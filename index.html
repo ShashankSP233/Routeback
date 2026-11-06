@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#1b3a4b">
   <title>RouteBack — Site travel reimbursement</title>
-  <link rel="stylesheet" href="styles.css?v=routeback-marine-topnav-20261106-3">
+  <link rel="stylesheet" href="styles.css?v=shared-vouchers-kpis-tabs-20261106">
 </head>
 
 <body>
@@ -31,6 +31,7 @@
         <div class="nav-label">WORKSPACE</div>
         <button class="nav-item active" data-view="dashboard"><span>▦</span> Overview</button>
         <button class="nav-item" data-view="vouchers"><span>▤</span> My vouchers <i id="myCount"></i></button>
+        <button class="nav-item hidden" data-view="allVouchers" id="allVouchersNav"><span>▤</span> All vouchers</button>
         <button class="nav-item" data-view="approvals" id="approvalsNav"><span>☷</span> Approvals <i
             id="approvalCount"></i></button>
         <button class="nav-item" data-view="payments"><span>₹</span> Payments</button>
@@ -60,7 +61,7 @@
     <div id="modalRoot"></div>
     <div id="toast" class="toast"></div>
   </div>
-  <script src="app.js?v=modal-stack-20261106"></script>
+  <script src="app.js?v=shared-vouchers-kpis-tabs-20261106"></script>
 </body>
 
 </html>

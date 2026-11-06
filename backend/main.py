@@ -230,20 +230,9 @@ def require_role(*roles: Role):
 
 
 def access_voucher(user: User, voucher: Voucher) -> bool:
-    if user.role == Role.ADMIN:
-        return True
     if voucher.employee_id == user.id:
         return True
-    if user.role == Role.HR and voucher.status == Status.HR_REVIEW:
-        return True
-    if user.role == Role.ACCOUNTS and voucher.status in {
-        Status.ACCOUNTS_REVIEW,
-        Status.PAYMENT_PROCESSING,
-        Status.PAYMENT_RECEIVED,
-    }:
-        return True
-    return False
-
+    return user.role in {Role.ADMIN, Role.HR, Role.ACCOUNTS}
 
 def get_voucher(db: Session, voucher_id: str) -> Voucher:
     v = db.scalar(
@@ -479,24 +468,7 @@ def list_vouchers(
         )
         .order_by(Voucher.created_at.desc())
     )
-    if user.role == Role.HR:
-        stmt = stmt.where(
-            or_(Voucher.employee_id == user.id, Voucher.status == Status.HR_REVIEW)
-        )
-    elif user.role == Role.ACCOUNTS:
-        stmt = stmt.where(
-            or_(
-                Voucher.employee_id == user.id,
-                Voucher.status.in_(
-                    [
-                        Status.ACCOUNTS_REVIEW,
-                        Status.PAYMENT_PROCESSING,
-                        Status.PAYMENT_RECEIVED,
-                    ]
-                ),
-            )
-        )
-    elif user.role != Role.ADMIN:
+    if user.role not in {Role.ADMIN, Role.HR, Role.ACCOUNTS}:
         stmt = stmt.where(Voucher.employee_id == user.id)
     visible = db.scalars(stmt).unique().all()
     mine = [serialize(v) for v in visible if v.employee_id == user.id]
@@ -506,7 +478,6 @@ def list_vouchers(
         Role.ACCOUNTS: {
             Status.ACCOUNTS_REVIEW,
             Status.PAYMENT_PROCESSING,
-            Status.PAYMENT_RECEIVED,
         },
     }.get(user.role, set())
     queue = [
@@ -514,7 +485,17 @@ def list_vouchers(
         for v in visible
         if v.employee_id != user.id and v.status in queue_statuses
     ]
-    return {"mine": mine, "queue": queue, "user": public_user(user)}
+    all_vouchers = (
+        [serialize(v) for v in visible]
+        if user.role in {Role.ADMIN, Role.HR, Role.ACCOUNTS}
+        else []
+    )
+    return {
+        "mine": mine,
+        "queue": queue,
+        "all_vouchers": all_vouchers,
+        "user": public_user(user),
+    }
 
 
 @app.post("/api/vouchers", status_code=201)
