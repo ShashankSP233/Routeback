@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#1b3a4b">
+  <title>RouteBack — Site travel reimbursement</title>
+  <link rel="stylesheet" href="styles.css?v=routeback-marine-topnav-20261106-3">
+</head>
+
+<body>
+  <section id="loginScreen" class="login-screen">
+    <form id="loginForm" class="login-card">
+      <div class="brand"><span class="brand-mark">R</span><span><b>RouteBack</b><small>SITE TRAVEL CLAIMS</small></span>
+      </div>
+      <h1>Welcome back</h1>
+      <p>Sign in to manage your travel vouchers.</p>
+      <label for="loginUser">Username</label><input id="loginUser" name="username" autocomplete="username" required>
+      <label for="loginPassword">Password</label><input id="loginPassword" name="password" type="password"
+        autocomplete="current-password" required>
+      <div id="loginError" class="login-error" role="alert"></div>
+      <button class="btn btn-primary" type="submit">Sign in →</button>
+    </form>
+  </section>
+  <div id="app" class="hidden">
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard" data-view="dashboard"><span class="brand-mark">R</span><span><b>RouteBack</b><small>SITE TRAVEL
+            CLAIMS</small></span></a>
+      <nav>
+        <div class="nav-label">WORKSPACE</div>
+        <button class="nav-item active" data-view="dashboard"><span>▦</span> Overview</button>
+        <button class="nav-item" data-view="vouchers"><span>▤</span> My vouchers <i id="myCount"></i></button>
+        <button class="nav-item" data-view="approvals" id="approvalsNav"><span>☷</span> Approvals <i
+            id="approvalCount"></i></button>
+        <button class="nav-item" data-view="payments"><span>₹</span> Payments</button>
+        <div class="nav-label nav-gap">MANAGE</div>
+        <button class="nav-item hidden" data-view="people" id="usersNav"><span>♙</span> People & roles</button>
+        <button class="nav-item hidden" data-view="projects" id="projectsNav"><span>⌂</span> Projects</button>
+        <button class="nav-item" data-view="policy"><span>≡</span> Travel policy</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="help-card"><b>Need a hand?</b><small>Questions about a travel claim?</small><span
+            id="sideUserHelp">Contact your administrator</span></div>
+        <div class="user-row"><span class="avatar avatar-user" id="sideAvatar">U</span><span><b id="sideName">Signed
+              in</b><small id="sideRole">Employee</small></span><button class="more" id="logoutButton"
+            aria-label="Sign out">↪</button></div>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="mobile-brand"><span class="brand-mark">R</span> RouteBack</div>
+        <div class="breadcrumbs">Site travel reimbursements <span>/</span> <b id="crumb">Overview</b></div>
+        <div class="top-actions"><span id="topName" class="top-name"></span><span class="avatar avatar-user"
+            id="topAvatar">U</span><button class="btn btn-small" id="topLogout">Sign out</button></div>
+      </header>
+      <div id="page" class="page"></div>
+    </main>
+    <nav class="mobile-nav" id="mobileNav" aria-label="Main navigation"></nav>
+    <div id="modalRoot"></div>
+    <div id="toast" class="toast"></div>
+  </div>
+  <script src="app.js?v=modal-stack-20261106"></script>
+</body>
+
+</html>
