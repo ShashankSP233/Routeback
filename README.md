@@ -7,7 +7,7 @@ RouteBack is a standalone reimbursement app for trips to a site and back. It use
 Requires Python 3.11 or newer and PostgreSQL.
 
 1. Create a PostgreSQL database named `routeback` (or use another database and update the connection string).
-2. Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell) and set `DATABASE_URL`, a random `SESSION_SECRET`, and a unique `INITIAL_ADMIN_PASSWORD` of 8–12 characters containing at least one letter and one number.
+2. Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell) and set `ROUTEBACK_DB_URL`, a random `SESSION_SECRET`, and a unique `INITIAL_ADMIN_PASSWORD` of 8–12 characters containing at least one letter and one number.
 3. Install dependencies: `python -m pip install -r requirements.txt`.
 4. Start the site: `python run_server.py`.
 5. Sign in at `http://localhost:3080` with `INITIAL_ADMIN_USERNAME` and `INITIAL_ADMIN_PASSWORD`.

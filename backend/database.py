@@ -5,11 +5,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
+ROUTEBACK_DB_URL = os.getenv(
+    "ROUTEBACK_DB_URL",
     "postgresql+psycopg://routeback:routeback@localhost:5432/routeback",
 )
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(ROUTEBACK_DB_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
