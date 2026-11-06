@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.types import Message, Receive, Scope, Send
 
 from .database import Base, SessionLocal, db_session, engine
 from .models import (
@@ -43,6 +44,34 @@ if len(SESSION_SECRET) < 32:
     raise RuntimeError(
         "Set SESSION_SECRET to a random value of at least 32 characters before starting RouteBack"
     )
+
+
+class SchemeAwareSessionMiddleware(SessionMiddleware):
+    """Mark session cookies Secure only when the request used HTTPS."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await super().__call__(scope, receive, send)
+            return
+
+        secure = scope.get("scheme") == "https"
+        cookie_prefix = f"{self.session_cookie}=".encode("ascii")
+
+        async def send_with_scheme_cookie(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = []
+                for name, value in message.get("headers", []):
+                    if name.lower() == b"set-cookie" and value.startswith(cookie_prefix):
+                        parts = [part.strip() for part in value.split(b";")]
+                        parts = [part for part in parts if part.lower() != b"secure"]
+                        if secure:
+                            parts.append(b"Secure")
+                        value = b"; ".join(parts)
+                    headers.append((name, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await super().__call__(scope, receive, send_with_scheme_cookie)
 
 
 @asynccontextmanager
@@ -92,12 +121,12 @@ app = FastAPI(
     title="RouteBack · Site travel reimbursement", version="1.0.0", lifespan=lifespan
 )
 app.add_middleware(
-    SessionMiddleware,
+    SchemeAwareSessionMiddleware,
     secret_key=SESSION_SECRET,
     session_cookie="routeback_session",
     max_age=60 * 60 * 12,
     same_site="lax",
-    https_only=os.getenv("COOKIE_HTTPS_ONLY", "0") == "1",
+    https_only=False,
 )
 allowed_origins = [
     x.strip()

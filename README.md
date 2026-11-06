@@ -29,7 +29,7 @@ Proof files accept PDF, PNG and JPEG, with a 10 MB per-file limit. They are stor
 
 ## Configuration and future hosting
 
-The default bind is `127.0.0.1:3080` for local use. For a server that must accept connections from other machines, set `HOST=0.0.0.0`, configure its firewall and network address, set `COOKIE_HTTPS_ONLY=1` behind HTTPS, and use production secrets and a persistent upload location. `http://localhost:3080` always refers to the device on which the browser is running.
+The default bind is `127.0.0.1:3080` for local use. The session cookie is marked Secure for HTTPS requests (including HTTPS forwarded by the local Nginx proxy) and remains usable for office HTTP access. For a server that must accept direct connections from other machines, set `HOST=0.0.0.0`, configure its firewall and network address, and use production secrets and a persistent upload location. `http://localhost:3080` always refers to the device on which the browser is running.
 
 Set `INITIAL_ADMIN_PASSWORD` only for initial setup; after an administrator exists, account management is done from **People & roles**. New users are created by an Admin in the app. User passwords must be 8–12 characters and include at least one letter and one number. `SESSION_SECRET` must be at least 32 characters.
 
