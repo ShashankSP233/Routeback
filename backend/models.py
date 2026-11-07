@@ -53,6 +53,7 @@ class Project(Base):
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
     name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    locations_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now
@@ -103,8 +104,12 @@ class ExpenseLine(Base):
     )
     category: Mapped[str] = mapped_column(String(100))
     description: Mapped[str] = mapped_column(Text)
+    medium: Mapped[str | None] = mapped_column(String(100), nullable=True)
     bill_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    attachments: Mapped[list["Attachment"]] = relationship(
+        back_populates="expense_line", cascade="all, delete-orphan"
+    )
 
 
 class VoucherEvent(Base):
@@ -129,9 +134,13 @@ class Attachment(Base):
     voucher_id: Mapped[str] = mapped_column(
         ForeignKey("travel_vouchers.id", ondelete="CASCADE"), index=True
     )
+    expense_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("travel_expense_lines.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     original_name: Mapped[str] = mapped_column(String(255))
     storage_key: Mapped[str] = mapped_column(String(500), unique=True)
     content_type: Mapped[str] = mapped_column(String(120))
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now
     )
+    expense_line: Mapped[ExpenseLine | None] = relationship(back_populates="attachments")

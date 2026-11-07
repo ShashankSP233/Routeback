@@ -34,6 +34,13 @@ const S = {
   view: "dashboard",
   query: "",
   statusFilter: "",
+  projectFilter: "",
+  fromFilter: "",
+  toFilter: "",
+  ownerFilter: "",
+  userQuery: "",
+  userRoleFilter: "",
+  userStatusFilter: "",
   paymentTab: "action",
 };
 const roleNames = {
@@ -42,6 +49,11 @@ const roleNames = {
   admin: "Administrator",
   accounts: "Accounts",
 };
+const travelMediums = [
+  "Taxi / app cab", "Company vehicle", "Personal car", "Personal two-wheeler",
+  "Auto-rickshaw", "Bus", "Train", "Airplane / commercial flight",
+  "Charter flight", "Helicopter", "Ferry / boat", "Other",
+];
 function normalise(v) {
   return {
     ...v,
@@ -58,6 +70,9 @@ function normalise(v) {
       x.category,
       Number(x.amount),
       x.bill_number || "",
+      x.medium || v.medium,
+      x.attachments || [],
+      x.id,
     ]),
     proofs: v.attachments || [],
     trail: (v.events || []).map((x) => [
@@ -247,8 +262,14 @@ function metricCard(label, value, note, icon) {
 function applyVoucherFilters(items) {
   const query = S.query.trim().toLowerCase();
   return items.filter((v) => {
-    const haystack = `${v.id} ${v.owner} ${v.from} ${v.to} ${v.purpose} ${v.status} ${v.project || ""}`.toLowerCase();
-    return (!query || haystack.includes(query)) && (!S.statusFilter || v.status === S.statusFilter);
+    const details = (v.lines || []).flat().join(" ");
+    const haystack = `${v.id} ${v.owner} ${v.from} ${v.to} ${v.purpose} ${v.status} ${v.project || ""} ${v.medium || ""} ${details}`.toLowerCase();
+    return (!query || haystack.includes(query)) &&
+      (!S.statusFilter || v.status === S.statusFilter) &&
+      (!S.projectFilter || String(v.project_id || "") === S.projectFilter) &&
+      (!S.ownerFilter || String(v.employee_id || "") === S.ownerFilter) &&
+      (!S.fromFilter || String(v.date || "") >= S.fromFilter) &&
+      (!S.toFilter || String(v.date || "") <= S.toFilter);
   });
 }
 function statusFilter(items) {
@@ -257,7 +278,15 @@ function statusFilter(items) {
   return `<select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option>${allStatuses.filter((status) => present.has(status)).map((status) => `<option value="${esc(status)}" ${S.statusFilter === status ? "selected" : ""}>${esc(status)}</option>`).join("")}</select>`;
 }
 function voucherFilters(items, placeholder, countLabel) {
-  return `<div class="filters"><input id="search" placeholder="${placeholder}" value="${esc(S.query)}">${statusFilter(items)}<span class="spacer"></span><span class="subhead">${countLabel}</span></div>`;
+  const projects = [...new Map(items.filter((v) => v.project_id).map((v) => [v.project_id, { id: v.project_id, name: v.project || "Project" }])).values()];
+  const projectOptions = [...new Map([...S.projects, ...projects].map((p) => [p.id, p])).values()]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((p) => `<option value="${esc(p.id)}" ${S.projectFilter === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+  const canFilterOwner = ["admin", "hr", "accounts"].includes(S.user.role);
+  const owners = canFilterOwner
+    ? [...new Map(S.allVouchers.map((v) => [v.employee_id, { id: v.employee_id, name: v.owner }])).values()].sort((a, b) => a.name.localeCompare(b.name))
+    : [];
+  return `<div class="filters filter-bar"><input id="search" type="search" placeholder="${placeholder}" value="${esc(S.query)}">${statusFilter(items)}<select id="projectFilter" aria-label="Filter by project"><option value="">All projects</option>${projectOptions}</select>${canFilterOwner ? `<select id="ownerFilter" aria-label="Filter by employee"><option value="">All employees</option>${owners.map((o) => `<option value="${esc(o.id)}" ${S.ownerFilter === o.id ? "selected" : ""}>${esc(o.name)}</option>`).join("")}</select>` : ""}<label class="filter-date"><span>From</span><input id="fromFilter" type="date" value="${esc(S.fromFilter)}"></label><label class="filter-date"><span>To</span><input id="toFilter" type="date" value="${esc(S.toFilter)}"></label><span class="filter-count">${countLabel}</span><button class="btn btn-small" id="clearVoucherFilters" type="button">Clear</button></div>`;
 }
 function dashboard() {
   const isEmployee = S.user.role === "employee";
@@ -324,27 +353,36 @@ function paymentsPage() {
   const rows = applyVoucherFilters(selected);
   const paymentRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${route(v)}</td><td>${esc(v.purpose)}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`;
   return `${pageHead("REIMBURSEMENTS", "Payments", "Track every voucher and focus on the actions waiting for your role.", "")}<div class="view-tabs" role="tablist"><button class="view-tab ${S.paymentTab === "action" ? "active" : ""}" data-payment-tab="action">Action required <span>${actionable.length}</span></button><button class="view-tab ${S.paymentTab === "history" ? "active" : ""}" data-payment-tab="history">All vouchers <span>${history.length}</span></button></div>${voucherFilters(selected, "Search voucher, employee or journey…", `${rows.length} of ${selected.length} records`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee</th><th>Journey</th><th>Purpose</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(paymentRow).join("") || `<tr><td colspan="7" class="empty">${S.paymentTab === "action" ? "No vouchers currently need your action." : "No voucher records match these filters."}</td></tr>`}</tbody></table></div></div>`;
-}function usersPage() {
-  return `${pageHead("ADMINISTRATION", "People & roles", "Create employee accounts and assign HR, Admin or Accounts access.", "")}<section class="card" style="margin-bottom:14px"><div class="card-head"><div><h2>Add a user</h2><p>Each person receives an individual sign-in and sees their own vouchers.</p></div></div><form id="userForm" class="detail-body form-grid" novalidate><div class="form-field"><label>Full name</label><input name="display_name" maxlength="200" placeholder="e.g. Human Resources"></div><div class="form-field"><label>Username</label><input name="username" maxlength="120" autocomplete="off" placeholder="e.g. hr or human.resources"><small class="form-hint">Use letters, numbers, dots, underscores or hyphens. Spaces are converted to dots.</small></div><div class="form-field"><label>Role</label><select name="role"><option value="employee">Employee</option><option value="hr">HR</option><option value="admin">Admin</option><option value="accounts">Accounts</option></select><small class="form-hint">Choose HR, Admin or Accounts when adding a reviewer.</small></div><div class="form-field"><label>Password · 8–12 characters, include letters and numbers</label><input name="password" type="password" maxlength="12" autocomplete="new-password"></div><div class="form-field full"><div id="userError" class="login-error" role="alert"></div><button class="btn btn-primary" type="submit">＋ Create account</button></div></form></section><section class="card"><div class="card-head"><div><h2>All user accounts</h2><p>${S.users.length} total · Each HR and Accounts role can be assigned to multiple people.</p></div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Access</th><th>Update</th></tr></thead><tbody>${S.users
-    .map(
-      (u) =>
-        `<tr><td><b>${esc(u.display_name)}</b></td><td>${esc(u.username)}</td><td><select data-user-role="${u.id}" ${!u.active ? "disabled" : ""}>${Object.entries(
-          roleNames,
-        )
-          .map(
-            ([k, n]) =>
-              `<option value="${k}" ${u.role === k ? "selected" : ""}>${n}</option>`,
-          )
-          .join(
-            "",
-          )}</select></td><td>${u.active ? '<span class="pill pill-closed">Active</span>' : '<span class="pill pill-rejected">Inactive</span>'}</td><td><button class="btn btn-small" data-user-save="${u.id}">Save role</button> <button class="btn btn-small" data-user-reset="${u.id}">Reset password</button> <button class="btn btn-small" data-user-toggle="${u.id}" data-active="${u.active}">${u.active ? "Deactivate" : "Reactivate"}</button></td></tr>`,
-    )
-    .join("")}</tbody></table></div></section>`;
 }
-function projectsPage() {
-  return `${pageHead("ADMINISTRATION", "Projects", "Manage the selectable project names shown on vouchers.", "")}<div class="banner">Projects are shared labels only. Users are not assigned to projects, and project selection does not change voucher access.</div><section class="card" style="margin-bottom:14px"><div class="card-head"><div><h2>Add a project</h2><p>Employees can select an active project when they submit a voucher.</p></div></div><form id="projectForm" class="detail-body form-grid"><div class="form-field"><label>Project name</label><input name="name" maxlength="200" placeholder="e.g. North Plant Upgrade"></div><div class="form-field" style="align-self:end"><button class="btn btn-primary" type="submit">＋ Add project</button></div><div class="form-field full"><div id="projectError" class="login-error" role="alert"></div></div></form></section><section class="card"><div class="card-head"><div><h2>Selectable projects</h2><p>${S.projects.length} active project${S.projects.length===1?"":"s"}</p></div></div><div class="table-wrap"><table><thead><tr><th>Project name</th><th>Use</th></tr></thead><tbody>${S.projects.map(p=>`<tr><td><b>${esc(p.name)}</b></td><td>Voucher selection</td></tr>`).join("")||'<tr><td colspan="2" class="empty">No projects added yet.</td></tr>'}</tbody></table></div></section>`;
+function reportsPage() {
+  const rows = applyVoucherFilters(S.allVouchers);
+  const reportRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${esc(v.project || "—")}</td><td>${route(v)}</td><td>${date(v.date)}</td><td>${esc(v.medium || "—")}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td></tr>`;
+  return `${pageHead("REPORTING", "Voucher report", "Filter the reimbursement register, then export the matching expense details.", '<button class="btn btn-primary" id="exportFilteredCsv">⇩ Download CSV</button>')}${voucherFilters(S.allVouchers, "Search voucher, employee, location or item…", `${rows.length} of ${S.allVouchers.length} vouchers`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee</th><th>Project</th><th>Journey / location</th><th>Date</th><th>Travel modes</th><th>Claim total</th><th>Status</th></tr></thead><tbody>${rows.map(reportRow).join("") || '<tr><td colspan="8" class="empty">No vouchers match these filters.</td></tr>'}</tbody></table></div></div>`;
 }
-function miscPage() {
+function exportFilteredCsv() {
+  const params = new URLSearchParams();
+  if (S.query.trim()) params.set("search", S.query.trim());
+  if (S.statusFilter) params.set("status", S.statusFilter);
+  if (S.projectFilter) params.set("project_id", S.projectFilter);
+  if (S.ownerFilter) params.set("employee_id", S.ownerFilter);
+  if (S.fromFilter) params.set("from", S.fromFilter);
+  if (S.toFilter) params.set("to", S.toFilter);
+  const link = document.createElement("a");
+  link.href = `/api/reports/vouchers.csv?${params.toString()}`;
+  link.click();
+}
+function usersPage() {
+  const q = S.userQuery.trim().toLowerCase();
+  const users = S.users.filter((u) =>
+    (!q || `${u.display_name} ${u.username}`.toLowerCase().includes(q)) &&
+    (!S.userRoleFilter || u.role === S.userRoleFilter) &&
+    (!S.userStatusFilter || String(u.active) === S.userStatusFilter)
+  );
+  const rows = users.map((u) => `<tr><td><b>${esc(u.display_name)}</b><small class="table-secondary">${esc(u.username)}</small></td><td><span class="role-label">${esc(roleNames[u.role] || u.role)}</span></td><td>${u.active ? '<span class="pill pill-closed">Active</span>' : '<span class="pill pill-rejected">Inactive</span>'}</td><td>${date(u.created_at.slice(0, 10))}</td><td class="user-row-actions"><button class="btn btn-small" data-user-edit="${u.id}">Edit details</button><button class="btn btn-small" data-user-reset="${u.id}">Reset password</button><button class="btn btn-small" data-user-toggle="${u.id}" data-active="${u.active}">${u.active ? "Deactivate" : "Reactivate"}</button></td></tr>`).join("");
+  return `${pageHead("ADMINISTRATION", "People & roles", "Manage account details, access and sign-in credentials.", "")}<section class="card user-create-card" style="margin-bottom:14px"><div class="card-head"><div><h2>Create an account</h2><p>Every employee has an individual sign-in and private voucher list.</p></div></div><form id="userForm" class="detail-body form-grid" novalidate><div class="form-field"><label>Full name</label><input name="display_name" maxlength="200" placeholder="e.g. Human Resources"></div><div class="form-field"><label>Username</label><input name="username" maxlength="120" autocomplete="off" placeholder="e.g. hr or human.resources"><small class="form-hint">Letters, numbers, dots, underscores and hyphens.</small></div><div class="form-field"><label>Role</label><select name="role"><option value="employee">Employee</option><option value="hr">HR</option><option value="admin">Admin</option><option value="accounts">Accounts</option></select></div><div class="form-field"><label>Initial password · 8–12 characters</label><input name="password" type="password" maxlength="12" autocomplete="new-password" placeholder="Include letters and numbers"></div><div class="form-field full"><div id="userError" class="login-error" role="alert"></div><button class="btn btn-primary" type="submit">＋ Create account</button></div></form></section><section class="card"><div class="card-head"><div><h2>User accounts</h2><p>${S.users.length} accounts · Edit names, usernames, roles and account status.</p></div></div><div class="filters filter-bar user-filters"><input id="userSearch" type="search" placeholder="Search name or username" value="${esc(S.userQuery)}"><select id="userRoleFilter"><option value="">All roles</option>${Object.entries(roleNames).map(([key, name]) => `<option value="${key}" ${S.userRoleFilter === key ? "selected" : ""}>${esc(name)}</option>`).join("")}</select><select id="userStatusFilter"><option value="">All statuses</option><option value="true" ${S.userStatusFilter === "true" ? "selected" : ""}>Active</option><option value="false" ${S.userStatusFilter === "false" ? "selected" : ""}>Inactive</option></select><span class="filter-count">${users.length} of ${S.users.length} accounts</span></div><div class="table-wrap"><table><thead><tr><th>Account</th><th>Role</th><th>Status</th><th>Created</th><th>Manage</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">No accounts match these filters.</td></tr>'}</tbody></table></div></section>`;
+}function projectsPage() {
+  return `${pageHead("ADMINISTRATION", "Projects", "Manage project names and the locations employees can select on vouchers.", "")}<div class="banner">Locations are suggestions tied to a project. Employees can still type a different location on any voucher.</div><section class="card" style="margin-bottom:14px"><div class="card-head"><div><h2>Add a project</h2><p>Add optional site or destination locations, one per line.</p></div></div><form id="projectForm" class="detail-body form-grid"><div class="form-field"><label>Project name</label><input name="name" maxlength="200" required placeholder="e.g. North Plant Upgrade"></div><div class="form-field"><label>Locations · optional</label><textarea name="locations" rows="3" placeholder="Main Site&#10;Camp Office&#10;Jetty"></textarea></div><div class="form-field full"><div id="projectError" class="login-error" role="alert"></div><button class="btn btn-primary" type="submit">＋ Add project</button></div></form></section><section class="card"><div class="card-head"><div><h2>Selectable projects</h2><p>${S.projects.length} active project${S.projects.length === 1 ? "" : "s"}</p></div></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Voucher locations</th><th></th></tr></thead><tbody>${S.projects.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td>${(p.locations || []).map((location) => `<span class="location-tag">${esc(location)}</span>`).join("") || '<span class="subhead">No saved locations</span>'}</td><td><button class="btn btn-small" data-project-edit="${p.id}">Edit project</button></td></tr>`).join("") || '<tr><td colspan="3" class="empty">No projects added yet.</td></tr>'}</tbody></table></div></section>`;
+}function miscPage() {
   return `${pageHead("WORKSPACE", "Travel policy", "Guidance for submitting a complete site travel claim.", "")}<div class="content-grid"><div class="card"><div class="card-head"><div><h2>What to include</h2><p>Help reviewers verify your claim.</p></div></div><div class="detail-body"><div class="activity"><b>Trip details</b><small>From and to locations, travel date, mode and site visit purpose.</small></div><div class="activity"><b>Expense breakdown</b><small>Fare, mileage, tolls, parking and other travel costs as separate items.</small></div><div class="activity"><b>Supporting proofs</b><small>Receipts, tickets and other supporting documents.</small></div></div></div><div class="card"><div class="card-head"><div><h2>Approval route</h2><p>Configured for this standalone site.</p></div></div><div class="detail-body"><div class="activity"><b>1 · HR review</b><small>Any active HR user can verify a submitted voucher.</small></div><div class="activity"><b>2 · Admin approval</b><small>Any active Admin can approve after HR verification.</small></div><div class="activity"><b>3 · Accounts review</b><small>Any active Accounts user can approve and record payment.</small></div><div class="activity"><b>4 · Employee confirmation</b><small>Only the voucher owner can confirm receipt and close it.</small></div></div></div></div>`;
 }
 async function refreshUsers() {
@@ -360,6 +398,7 @@ async function render() {
     allVouchers: "All vouchers",
     approvals: "Approvals",
     payments: "Payments",
+    reports: "Reports",
     people: "People & roles",
     projects: "Projects",
     policy: "Travel policy",
@@ -372,9 +411,11 @@ async function render() {
   $("#topName").textContent = S.user.display_name;
   const isAdmin = S.user.role === "admin";
   const canSeeAll = ["admin", "hr", "accounts"].includes(S.user.role);
+  const canSeeReports = ["admin", "hr", "accounts"].includes(S.user.role);
   $("#usersNav").classList.toggle("hidden", !isAdmin);
   $("#projectsNav").classList.toggle("hidden", !isAdmin);
   $("#allVouchersNav").classList.toggle("hidden", !canSeeAll);
+  $("#reportsNav").classList.toggle("hidden", !canSeeReports);
   const canReview = ["hr", "admin", "accounts"].includes(S.user.role);
   $("#approvalsNav").classList.toggle("hidden", !canReview);
   $("#approvalCount").textContent = S.queue.filter((v) => actionFor(v)).length;
@@ -383,6 +424,7 @@ async function render() {
   if (canSeeAll) mobile.push(["allVouchers", "▤", "All"]);
   if (canReview) mobile.push(["approvals", "☷", "Review"]);
   mobile.push(["payments", "₹", "Payments"]);
+  if (canSeeReports) mobile.push(["reports", "⇩", "Reports"]);
   if (isAdmin) mobile.push(["people", "♙", "People"], ["projects", "⌂", "Projects"]);
   $("#mobileNav").innerHTML = mobile.map(([id, icon, label]) => `<button class="mobile-nav-item ${S.view === id ? "active" : ""}" data-view="${id}"><span>${icon}</span>${label}</button>`).join("") + `<button class="mobile-nav-item mobile-add" id="mobileNew"><span>＋</span>New</button>`;
   if (S.view === "people" && isAdmin) await refreshUsers();
@@ -393,6 +435,7 @@ async function render() {
     allVouchers: canSeeAll ? allVouchersPage : miscPage,
     approvals: canReview ? approvalsPage : miscPage,
     payments: paymentsPage,
+    reports: canSeeReports ? reportsPage : miscPage,
     people: isAdmin ? usersPage : miscPage,
     projects: isAdmin ? projectsPage : miscPage,
     policy: miscPage,
@@ -408,6 +451,10 @@ function bindPage() {
       S.view = button.dataset.view;
       S.query = "";
       S.statusFilter = "";
+      S.projectFilter = "";
+      S.fromFilter = "";
+      S.toFilter = "";
+      S.ownerFilter = "";
       render();
     };
   });
@@ -416,6 +463,10 @@ function bindPage() {
       S.paymentTab = button.dataset.paymentTab;
       S.query = "";
       S.statusFilter = "";
+      S.projectFilter = "";
+      S.fromFilter = "";
+      S.toFilter = "";
+      S.ownerFilter = "";
       render();
     };
   });
@@ -434,11 +485,45 @@ function bindPage() {
   };
   const status = $("#statusFilter");
   if (status) status.onchange = () => { S.statusFilter = status.value; render(); };
+  const projectFilter = $("#projectFilter");
+  if (projectFilter) projectFilter.onchange = () => { S.projectFilter = projectFilter.value; render(); };
+  const ownerFilter = $("#ownerFilter");
+  if (ownerFilter) ownerFilter.onchange = () => { S.ownerFilter = ownerFilter.value; render(); };
+  const fromFilter = $("#fromFilter");
+  if (fromFilter) fromFilter.onchange = () => { S.fromFilter = fromFilter.value; render(); };
+  const toFilter = $("#toFilter");
+  if (toFilter) toFilter.onchange = () => { S.toFilter = toFilter.value; render(); };
+  const clearFilters = $("#clearVoucherFilters");
+  if (clearFilters) clearFilters.onclick = () => {
+    S.query = "";
+    S.statusFilter = "";
+    S.projectFilter = "";
+    S.fromFilter = "";
+    S.toFilter = "";
+    S.ownerFilter = "";
+    render();
+  };
+  const userSearch = $("#userSearch");
+  if (userSearch) userSearch.oninput = () => {
+    S.userQuery = userSearch.value;
+    const position = userSearch.selectionStart;
+    render().then(() => {
+      const next = $("#userSearch");
+      if (next) { next.focus(); next.setSelectionRange(position, position); }
+    });
+  };
+  const userRoleFilter = $("#userRoleFilter");
+  if (userRoleFilter) userRoleFilter.onchange = () => { S.userRoleFilter = userRoleFilter.value; render(); };
+  const userStatusFilter = $("#userStatusFilter");
+  if (userStatusFilter) userStatusFilter.onchange = () => { S.userStatusFilter = userStatusFilter.value; render(); };
+  const exportButton = $("#exportFilteredCsv");
+  if (exportButton) exportButton.onclick = exportFilteredCsv;
   const form = $("#userForm");
   if (form) form.onsubmit = createUser;
   const projectForm = $("#projectForm");
   if (projectForm) projectForm.onsubmit = createProject;
-  document.querySelectorAll("[data-user-save]").forEach((button) => (button.onclick = () => saveUser(button.dataset.userSave)));
+  document.querySelectorAll("[data-user-edit]").forEach((button) => (button.onclick = () => editUser(button.dataset.userEdit)));
+  document.querySelectorAll("[data-project-edit]").forEach((button) => (button.onclick = () => editProject(button.dataset.projectEdit)));
   document.querySelectorAll("[data-user-reset]").forEach((button) => (button.onclick = () => resetPassword(button.dataset.userReset)));
   document.querySelectorAll("[data-user-toggle]").forEach((button) => (button.onclick = () => toggleUser(button.dataset.userToggle, button.dataset.active === "true")));
 }function modal(content, id, stack = false) {
@@ -457,38 +542,28 @@ function createModal() {
   const projectOptions = S.projects
     .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`)
     .join("");
-  return `<form class="modal" id="voucherForm"><div class="modal-head"><h2>New site travel voucher</h2><button type="button" data-close>×</button></div><div class="modal-content"><div class="banner">Select a project or enter the start and destination. Add one or more expense items and proof files for HR review.</div><div class="form-grid"><div class="form-field full"><label>Project · optional</label><select name="project_id" id="projectSelect"><option value="">No project selected</option>${projectOptions}</select><small class="form-hint">Projects are selectable labels only; they do not determine user access.</small></div><div class="form-field"><label>From · required without a project</label><input name="origin" id="voucherOrigin" maxlength="240" placeholder="e.g. Bengaluru office"></div><div class="form-field"><label>To site · required without a project</label><input name="destination" id="voucherDestination" maxlength="240" placeholder="e.g. Hoskote project site"></div><div class="form-field"><label>Travel date</label><input type="date" name="travel_date" required value="${new Date().toISOString().slice(0, 10)}"></div><div class="form-field"><label>Travel medium</label><select name="medium"><option>Company cab</option><option>Taxi / app cab</option><option>Personal vehicle</option><option>Auto-rickshaw</option><option>Bus</option><option>Train</option><option>Airplane / commercial flight</option><option>Charter flight</option><option>Helicopter</option><option>Ferry / boat</option><option>Other</option></select></div><div class="form-field full"><label>Purpose of site visit</label><input name="purpose" required maxlength="2000" placeholder="What was the site visit for?"></div><div class="form-field full"><div class="expense-items-heading"><label>Expense items</label><strong id="expenseTotal">Claim total: ₹0.00</strong></div><div id="expenseItems"></div><button type="button" class="btn btn-small" id="addExpenseItem">+ Add expense item</button></div><div class="form-field full"><label>Bills & proofs · PDF, PNG or JPEG, max 10 MB each</label><div class="upload">Add files one or more times; previous selections stay in the list.<input type="file" id="proofsInput" multiple accept=".pdf,.png,.jpg,.jpeg"><div id="selectedProofs" class="selected-proof-list"></div></div></div></div></div><div class="modal-foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Submit voucher →</button></div></form>`;
+  return `<form class="modal" id="voucherForm"><div class="modal-head"><h2>New site travel voucher</h2><button type="button" data-close>×</button></div><div class="modal-content"><div class="banner">Choose a project location or enter one manually. Add expenses separately, each with its own travel mode and proof files.</div><div class="form-grid"><div class="form-field full"><label>Project · optional</label><select name="project_id" id="projectSelect"><option value="">No project selected</option>${projectOptions}</select><small class="form-hint">Projects are selectable labels only; they do not determine user access.</small></div><div class="form-field"><label>From · required without a project</label><input name="origin" id="voucherOrigin" maxlength="240" placeholder="Enter start location"></div><div class="form-field"><label>To / project location · required without a project</label><input name="destination" id="voucherDestination" list="projectLocationOptions" maxlength="240" placeholder="Choose a suggestion or type any location"><datalist id="projectLocationOptions"></datalist><small class="form-hint">Project locations are suggestions; you can enter another location.</small></div><div class="form-field"><label>Travel date</label><input type="date" name="travel_date" required value="${new Date().toISOString().slice(0, 10)}"></div><div class="form-field"><label>Purpose of site visit</label><input name="purpose" required maxlength="2000" placeholder="What was the site visit for?"></div><div class="form-field full"><div class="expense-items-heading"><label>Expense items</label><strong id="expenseTotal">Claim total: ₹0.00</strong></div><div id="expenseItems"></div><button type="button" class="btn btn-small" id="addExpenseItem">+ Add expense item</button></div></div></div><div class="modal-foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Submit voucher →</button></div></form>`;
 }
 function showCreate() {
   modal(createModal(), "createModal");
-  S.expenseItems = [{ category: "Local travel", description: "", bill_number: "", amount: "" }];
+  S.expenseItems = [{ category: "Local travel", description: "", medium: "Taxi / app cab", bill_number: "", amount: "", files: [] }];
   renderExpenseItems();
   $("#addExpenseItem").onclick = () => {
-    S.expenseItems.push({ category: "Local travel", description: "", bill_number: "", amount: "" });
+    S.expenseItems.push({ category: "Local travel", description: "", medium: "Taxi / app cab", bill_number: "", amount: "", files: [] });
     renderExpenseItems();
-  };
-  S.proofFiles = [];
-  renderSelectedProofs();
-  $("#proofsInput").onchange = (event) => {
-    for (const file of event.target.files) {
-      const duplicate = S.proofFiles.some(
-        (existing) =>
-          existing.name === file.name &&
-          existing.size === file.size &&
-          existing.lastModified === file.lastModified,
-      );
-      if (!duplicate) S.proofFiles.push(file);
-    }
-    event.target.value = "";
-    renderSelectedProofs();
   };
   const projectSelect = $("#projectSelect");
   const origin = $("#voucherOrigin");
   const destination = $("#voucherDestination");
+  const updateProjectLocations = () => {
+    const selected = S.projects.find((project) => project.id === projectSelect.value);
+    $("#projectLocationOptions").innerHTML = (selected?.locations || []).map((location) => `<option value="${esc(location)}"></option>`).join("");
+  };
   const updateRouteRequirements = () => {
     const routeRequired = !projectSelect.value;
     origin.required = routeRequired;
     destination.required = routeRequired;
+    updateProjectLocations();
   };
   projectSelect.onchange = updateRouteRequirements;
   updateRouteRequirements();
@@ -498,7 +573,7 @@ function renderExpenseItems() {
   const container = $("#expenseItems");
   if (!container) return;
   container.innerHTML = S.expenseItems
-    .map((item, index) => `<div class="expense-item-card" data-expense-index="${index}"><div class="expense-item-top"><strong>Item ${index + 1}</strong><button type="button" class="btn btn-small" data-remove-expense="${index}" ${S.expenseItems.length === 1 ? "disabled" : ""}>Remove</button></div><div class="form-grid"><div class="form-field"><label>Category</label><select data-expense-field="category"><option ${item.category === "Local travel" ? "selected" : ""}>Local travel</option><option ${item.category === "Public transport" ? "selected" : ""}>Public transport</option><option ${item.category === "Airfare" ? "selected" : ""}>Airfare</option><option ${item.category === "Personal vehicle / mileage" ? "selected" : ""}>Personal vehicle / mileage</option><option ${item.category === "Tolls and parking" ? "selected" : ""}>Tolls and parking</option><option ${item.category === "Other travel costs" ? "selected" : ""}>Other travel costs</option></select></div><div class="form-field"><label>Amount (₹)</label><input data-expense-field="amount" type="number" min="0.01" step="0.01" required value="${esc(item.amount)}" placeholder="0.00"></div><div class="form-field"><label>Bill number · optional</label><input data-expense-field="bill_number" maxlength="120" value="${esc(item.bill_number)}" placeholder="e.g. INV-1042"></div><div class="form-field"><label>Description</label><input data-expense-field="description" maxlength="1000" required value="${esc(item.description)}" placeholder="Fare, toll, parking, etc."></div></div></div>`)
+    .map((item, index) => `<div class="expense-item-card" data-expense-index="${index}"><div class="expense-item-top"><strong>Item ${index + 1}</strong><button type="button" class="btn btn-small" data-remove-expense="${index}" ${S.expenseItems.length === 1 ? "disabled" : ""}>Remove</button></div><div class="form-grid"><div class="form-field"><label>Expense type</label><select data-expense-field="category"><option ${item.category === "Local travel" ? "selected" : ""}>Local travel</option><option ${item.category === "Public transport" ? "selected" : ""}>Public transport</option><option ${item.category === "Airfare" ? "selected" : ""}>Airfare</option><option ${item.category === "Personal vehicle / mileage" ? "selected" : ""}>Personal vehicle / mileage</option><option ${item.category === "Tolls and parking" ? "selected" : ""}>Tolls and parking</option><option ${item.category === "Other travel costs" ? "selected" : ""}>Other travel costs</option></select></div><div class="form-field"><label>Travel mode</label><select data-expense-field="medium">${travelMediums.map((medium) => `<option ${item.medium === medium ? "selected" : ""}>${esc(medium)}</option>`).join("")}</select></div><div class="form-field"><label>Amount (₹)</label><input data-expense-field="amount" type="number" min="0.01" step="0.01" required value="${esc(item.amount)}" placeholder="0.00"></div><div class="form-field"><label>Bill number · optional</label><input data-expense-field="bill_number" maxlength="120" value="${esc(item.bill_number)}" placeholder="e.g. INV-1042"></div><div class="form-field full"><label>Description</label><input data-expense-field="description" maxlength="1000" required value="${esc(item.description)}" placeholder="Fare, toll, parking, etc."></div><div class="form-field full"><label>Receipts & proofs for this item</label><div class="upload"><input type="file" data-expense-proof="${index}" multiple accept=".pdf,.png,.jpg,.jpeg"><div class="selected-proof-list">${item.files.map((file, fileIndex) => `<div class="selected-proof"><span>${esc(file.name)}</span><button type="button" class="btn btn-small" data-remove-item-proof="${fileIndex}">Remove</button></div>`).join("")}</div></div></div></div></div>`)
     .join("");
   container.querySelectorAll("[data-expense-field]").forEach((field) => {
     field.addEventListener("input", updateExpenseField);
@@ -507,6 +582,23 @@ function renderExpenseItems() {
   container.querySelectorAll("[data-remove-expense]").forEach((button) => {
     button.onclick = () => {
       S.expenseItems.splice(Number(button.dataset.removeExpense), 1);
+      renderExpenseItems();
+    };
+  });
+  container.querySelectorAll("[data-expense-proof]").forEach((input) => {
+    input.onchange = () => {
+      const item = S.expenseItems[Number(input.dataset.expenseProof)];
+      for (const file of input.files) {
+        const duplicate = item.files.some((existing) => existing.name === file.name && existing.size === file.size && existing.lastModified === file.lastModified);
+        if (!duplicate) item.files.push(file);
+      }
+      renderExpenseItems();
+    };
+  });
+  container.querySelectorAll("[data-remove-item-proof]").forEach((button) => {
+    button.onclick = () => {
+      const itemIndex = Number(button.closest("[data-expense-index]").dataset.expenseIndex);
+      S.expenseItems[itemIndex].files.splice(Number(button.dataset.removeItemProof), 1);
       renderExpenseItems();
     };
   });
@@ -541,8 +633,7 @@ function renderSelectedProofs() {
 async function submitVoucher(e) {
   e.preventDefault();
   let form = e.currentTarget,
-    f = new FormData(form),
-    files = [...S.proofFiles];
+    f = new FormData(form);
   try {
     let v = await api("/vouchers", {
       method: "POST",
@@ -551,23 +642,26 @@ async function submitVoucher(e) {
         origin: f.get("origin") || null,
         destination: f.get("destination") || null,
         travel_date: f.get("travel_date"),
-        medium: f.get("medium"),
         purpose: f.get("purpose"),
         expenses: S.expenseItems.map((item) => ({
           category: item.category,
           description: item.description,
+          medium: item.medium,
           bill_number: item.bill_number || null,
           amount: item.amount,
         })),
       }),
     });
-    for (let file of files) {
-      let fd = new FormData();
-      fd.append("file", file);
-      await api(`/vouchers/${v.id}/attachments`, { method: "POST", body: fd });
+    for (let i = 0; i < S.expenseItems.length; i++) {
+      const expenseId = v.expenses[i].id;
+      for (const file of S.expenseItems[i].files) {
+        const fd = new FormData();
+        fd.append("file", file);
+        await api(`/vouchers/${v.id}/expenses/${expenseId}/attachments`, { method: "POST", body: fd });
+      }
     }
     $("#modalRoot").innerHTML = "";
-    S.proofFiles = [];
+    S.expenseItems = [];
     await load();
     S.view = "vouchers";
     await render();
@@ -598,9 +692,9 @@ async function openDetail(id) {
           button.dataset.fileType,
         );
     });
-    let proofInput = $("#extraProofs");
-    if (proofInput)
-      proofInput.onchange = () => uploadProofs(v.id, proofInput.files);
+    document.querySelectorAll("[data-expense-proof-upload]").forEach((input) => {
+      input.onchange = () => uploadExpenseProofs(v.id, input.dataset.expenseProofUpload, input.files);
+    });
   } catch (err) {
     toast(err.message);
   }
@@ -633,6 +727,19 @@ async function uploadProofs(voucherId, files) {
     toast(err.message);
   }
 }
+async function uploadExpenseProofs(voucherId, expenseId, files) {
+  try {
+    for (const file of files) {
+      const fd = new FormData();
+      fd.append("file", file);
+      await api(`/vouchers/${encodeURIComponent(voucherId)}/expenses/${encodeURIComponent(expenseId)}/attachments`, { method: "POST", body: fd });
+    }
+    await openDetail(voucherId);
+    toast("Proofs attached to expense item");
+  } catch (err) {
+    toast(err.message);
+  }
+}
 function detail(v) {
   let action = actionFor(v),
     canReject =
@@ -640,23 +747,16 @@ function detail(v) {
       ((S.user.role === "hr" && v.status === "HR review") ||
         (S.user.role === "admin" && v.status === "Admin approval") ||
         (S.user.role === "accounts" && v.status === "Accounts review"));
-  let attachments =
-    v.proofs
-      .map(
-        (f) => `<div class="proof proof-file"><strong>${esc(f.name)}</strong><div class="proof-actions"><button type="button" class="btn btn-small" data-preview-file="${f.id}" data-file-name="${esc(f.name)}" data-file-type="${esc(f.content_type)}">View</button><a class="btn btn-small" href="/api/attachments/${f.id}?download=true">Download</a></div></div>`,
-      )
-      .join("") || '<div class="proof">No files attached</div>';
-  let extraUpload =
-    v.employee_id === S.user.id && v.status === "HR review"
-      ? '<div class="proof">Add or retry proof uploads<input id="extraProofs" type="file" multiple accept=".pdf,.png,.jpg,.jpeg"></div>'
-      : "";
+  const proofMarkup = (f) => `<div class="proof proof-file"><strong>${esc(f.name)}</strong><div class="proof-actions"><button type="button" class="btn btn-small" data-preview-file="${f.id}" data-file-name="${esc(f.name)}" data-file-type="${esc(f.content_type)}">View</button><a class="btn btn-small" href="/api/attachments/${f.id}?download=true">Download</a></div></div>`;
+  const attachments = v.proofs.filter((file) => !file.expense_line_id).map(proofMarkup).join("") || '<div class="proof">No unassigned proof files</div>';
+  const expenseBreakdown = v.lines.map((item) => `<div class="expense-detail-row"><div class="expense-detail-main"><b>${esc(item[0])}</b><span>${esc(item[1])} · ${esc(item[4] || "Travel mode not recorded")}</span>${item[3] ? `<small>Bill number: ${esc(item[3])}</small>` : ""}<strong>${money(item[2])}</strong></div><div class="expense-detail-proofs">${(item[5] || []).map(proofMarkup).join("") || '<span class="subhead">No proof attached to this item.</span>'}</div>${v.employee_id === S.user.id && v.status === "HR review" ? `<label class="expense-proof-upload">Add proof for this item<input type="file" data-expense-proof-upload="${item[6]}" multiple accept=".pdf,.png,.jpg,.jpeg"></label>` : ""}</div>`).join("");
   let payFields =
     S.user.role === "accounts" &&
     v.status === "Payment processing" &&
     v.employee_id !== S.user.id
       ? `<div class="form-field" style="margin:12px 0"><label>Payment reference</label><input id="payRef" required placeholder="Bank transfer reference"></div><div class="form-field"><label>Payment date</label><input id="payDate" type="date" required value="${new Date().toISOString().slice(0, 10)}"></div><button class="btn btn-primary" data-action="markPaid" style="margin-top:10px">Record payment sent →</button>`
       : "";
-  return `<div class="modal"><div class="modal-head"><h2>Voucher ${esc(v.id)}</h2>${pill(v.status)}<button data-close>×</button></div><div class="modal-content"><div class="banner">${route(v)} <span style="float:right;font-family:'IBM Plex Mono'">${money(v.total)}</span></div><div class="detail-grid"><div><div class="card"><div class="card-head"><div><h2>Trip & expense details</h2></div><span class="subhead">Submitted by ${esc(v.owner)}</span></div><div class="detail-body"><div class="detail-kv"><div class="kv"><label>Purpose</label><b>${esc(v.purpose)}</b></div><div class="kv"><label>Travel date</label><b>${date(v.date)}</b></div><div class="kv"><label>Travel mode</label><b>${esc(v.mode)}</b></div><div class="kv"><label>Claim total</label><b>${money(v.total)}</b></div></div><h3 style="margin-top:18px">Expense breakdown</h3>${v.lines.map((x) => `<div class="expense-line"><span>${esc(x[0])}</span><span>${esc(x[1])}</span><span>${x[3] ? `Bill: ${esc(x[3])}` : "—"}</span><b>${money(x[2])}</b></div>`).join("")}<h3 style="margin-top:18px">Bills & proofs</h3>${attachments}${extraUpload}</div></div><div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Activity</h2></div></div>${v.trail.map((x) => `<div class="activity"><b>${esc(x[0])}</b><small>${esc(x[1])}</small></div>`).join("")}</div></div><div><div class="card"><div class="card-head"><div><h2>Approval progress</h2></div></div>${timeline(v)}</div><div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Next action</h2><p>${action ? esc(action[1]) : "No action is available for your account at this step."}</p></div></div><div class="detail-body">${action && action[0] !== "mark_paid" ? `<button class="btn btn-primary" data-action="advance">${esc(action[1])} →</button>` : ""}${payFields}${canReject ? '<div style="margin-top:9px"><button class="btn btn-small" data-action="reject">Reject voucher</button></div>' : ""}${v.status === "Payment received" ? `<div class="banner" style="margin-top:9px">Payment ref: ${esc(v.payment_reference || "—")} · ${date(v.payment_date)}</div>` : ""}</div></div></div></div></div></div>`;
+  return `<div class="modal"><div class="modal-head"><h2>Voucher ${esc(v.id)}</h2>${pill(v.status)}<button data-close>×</button></div><div class="modal-content"><div class="banner">${route(v)} <span style="float:right;font-family:'IBM Plex Mono'">${money(v.total)}</span></div><div class="detail-grid"><div><div class="card"><div class="card-head"><div><h2>Trip & expense details</h2></div><span class="subhead">Submitted by ${esc(v.owner)}</span></div><div class="detail-body"><div class="detail-kv"><div class="kv"><label>Purpose</label><b>${esc(v.purpose)}</b></div><div class="kv"><label>Travel date</label><b>${date(v.date)}</b></div><div class="kv"><label>Travel modes</label><b>${esc(v.mode)}</b></div><div class="kv"><label>Claim total</label><b>${money(v.total)}</b></div></div><h3 style="margin-top:18px">Expense items</h3>${expenseBreakdown}<h3 style="margin-top:18px">Other bills & proofs</h3>${attachments}</div></div><div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Activity</h2></div></div>${v.trail.map((x) => `<div class="activity"><b>${esc(x[0])}</b><small>${esc(x[1])}</small></div>`).join("")}</div></div><div><div class="card"><div class="card-head"><div><h2>Approval progress</h2></div></div>${timeline(v)}</div><div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Next action</h2><p>${action ? esc(action[1]) : "No action is available for your account at this step."}</p></div></div><div class="detail-body">${action && action[0] !== "mark_paid" ? `<button class="btn btn-primary" data-action="advance">${esc(action[1])} →</button>` : ""}${payFields}${canReject ? '<div style="margin-top:9px"><button class="btn btn-small" data-action="reject">Reject voucher</button></div>' : ""}${v.status === "Payment received" ? `<div class="banner" style="margin-top:9px">Payment ref: ${esc(v.payment_reference || "—")} · ${date(v.payment_date)}</div>` : ""}</div></div></div></div></div></div>`;
 }
 async function advance(v, action) {
   let payload = { action };
@@ -742,10 +842,49 @@ async function createUser(e) {
     errorBox.textContent = err.message;
   }
 }
+async function editUser(id) {
+  const user = S.users.find((item) => item.id === id);
+  if (!user) return;
+  modal(`<form class="modal" id="editUserForm"><div class="modal-head"><h2>Edit user account</h2><button type="button" data-close>×</button></div><div class="modal-content"><div class="banner">Changes apply to this person’s next sign-in. Passwords are managed separately.</div><div class="form-grid"><div class="form-field"><label>Full name</label><input name="display_name" maxlength="200" required value="${esc(user.display_name)}"></div><div class="form-field"><label>Username</label><input name="username" maxlength="120" required value="${esc(user.username)}"><small class="form-hint">Use 3–120 letters, numbers, dots, underscores or hyphens.</small></div><div class="form-field"><label>Role</label><select name="role">${Object.entries(roleNames).map(([key, name]) => `<option value="${key}" ${user.role === key ? "selected" : ""}>${esc(name)}</option>`).join("")}</select></div><div class="form-field"><label>Account status</label><select name="active"><option value="true" ${user.active ? "selected" : ""}>Active</option><option value="false" ${!user.active ? "selected" : ""}>Inactive</option></select></div></div><div id="editUserError" class="login-error" role="alert"></div></div><div class="modal-foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Save changes</button></div></form>`, "editUserModal");
+  const form = $("#editUserForm");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const values = new FormData(form);
+    const username = String(values.get("username") || "").trim().toLowerCase().replace(/\s+/g, ".");
+    const displayName = String(values.get("display_name") || "").trim();
+    if (!/^[a-z0-9._-]{3,120}$/.test(username)) {
+      $("#editUserError").textContent = "Enter a username with 3–120 letters, numbers, dots, underscores or hyphens.";
+      return;
+    }
+    if (!displayName) {
+      $("#editUserError").textContent = "Enter the person's full name.";
+      return;
+    }
+    try {
+      await api(`/users/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          username,
+          display_name: displayName,
+          role: values.get("role"),
+          active: values.get("active") === "true",
+        }),
+      });
+      $("#modalRoot").innerHTML = "";
+      await refreshUsers();
+      await render();
+      toast("User details updated");
+    } catch (err) {
+      $("#editUserError").textContent = err.message;
+    }
+  };
+}
 async function createProject(e) {
   e.preventDefault();
   const form = e.currentTarget;
-  const name = String(new FormData(form).get("name") || "").trim();
+  const fields = new FormData(form);
+  const name = String(fields.get("name") || "").trim();
+  const locations = String(fields.get("locations") || "").split(/[\n,]+/).map((value) => value.trim()).filter(Boolean);
   const errorBox = $("#projectError");
   errorBox.textContent = "";
   if (!name) {
@@ -755,7 +894,7 @@ async function createProject(e) {
   try {
     await api("/projects", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, locations }),
     });
     await refreshProjects();
     await render();
@@ -763,6 +902,29 @@ async function createProject(e) {
   } catch (err) {
     errorBox.textContent = err.message;
   }
+}
+async function editProject(id) {
+  const project = S.projects.find((item) => item.id === id);
+  if (!project) return;
+  modal(`<form class="modal" id="editProjectForm"><div class="modal-head"><h2>Edit project</h2><button type="button" data-close>×</button></div><div class="modal-content"><div class="form-field"><label>Project name</label><input name="name" maxlength="200" required value="${esc(project.name)}"></div><div class="form-field" style="margin-top:14px"><label>Locations · one per line</label><textarea name="locations" rows="6" placeholder="Main Site">${esc((project.locations || []).join("\n"))}</textarea><small class="form-hint">These appear as suggestions on vouchers. Users can still enter another location.</small></div><div id="editProjectError" class="login-error" role="alert"></div></div><div class="modal-foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Save project</button></div></form>`, "editProjectModal");
+  const form = $("#editProjectForm");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const fields = new FormData(form);
+    const locations = String(fields.get("locations") || "").split(/[\n,]+/).map((value) => value.trim()).filter(Boolean);
+    try {
+      await api(`/projects/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: String(fields.get("name") || "").trim(), locations }),
+      });
+      $("#modalRoot").innerHTML = "";
+      await refreshProjects();
+      await render();
+      toast("Project updated");
+    } catch (err) {
+      $("#editProjectError").textContent = err.message;
+    }
+  };
 }
 async function saveUser(id) {
   let role = $(`[data-user-role="${id}"]`).value;

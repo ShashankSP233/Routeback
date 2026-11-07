@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import csv
+import io
+import json
 import secrets
 import time
 from collections import defaultdict, deque
@@ -14,8 +17,8 @@ from typing import Annotated
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select, text
@@ -92,6 +95,24 @@ async def lifespan(_: FastAPI):
         )
         connection.execute(
             text("ALTER TABLE travel_expense_lines ADD COLUMN IF NOT EXISTS bill_number VARCHAR(120)")
+        )
+        connection.execute(
+            text("ALTER TABLE projects ADD COLUMN IF NOT EXISTS locations_json TEXT NOT NULL DEFAULT '[]'")
+        )
+        connection.execute(
+            text("ALTER TABLE travel_expense_lines ADD COLUMN IF NOT EXISTS medium VARCHAR(100)")
+        )
+        connection.execute(
+            text(
+                "UPDATE travel_expense_lines AS e SET medium = v.medium "
+                "FROM travel_vouchers AS v WHERE e.voucher_id = v.id AND e.medium IS NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE travel_voucher_attachments ADD COLUMN IF NOT EXISTS "
+                "expense_line_id INTEGER REFERENCES travel_expense_lines(id) ON DELETE CASCADE"
+            )
         )
     with SessionLocal() as db:
         if not db.scalar(select(User.id).limit(1)):
@@ -174,6 +195,9 @@ class UserIn(BaseModel):
 
 
 class UserPatch(BaseModel):
+    username: str | None = Field(
+        default=None, min_length=3, max_length=120, pattern=r"^[a-zA-Z0-9._-]+$"
+    )
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
     role: Role | None = None
     active: bool | None = None
@@ -193,6 +217,7 @@ class UserPatch(BaseModel):
 class ExpenseIn(BaseModel):
     category: str = Field(min_length=1, max_length=100)
     description: str = Field(min_length=1, max_length=1000)
+    medium: str | None = Field(default=None, max_length=100)
     bill_number: str | None = Field(default=None, max_length=120)
     amount: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
 
@@ -202,7 +227,7 @@ class VoucherIn(BaseModel):
     origin: str | None = Field(default=None, max_length=240)
     destination: str | None = Field(default=None, max_length=240)
     travel_date: date
-    medium: str = Field(min_length=1, max_length=100)
+    medium: str | None = Field(default=None, max_length=100)
     purpose: str = Field(min_length=1, max_length=2000)
     expenses: list[ExpenseIn] = Field(min_length=1, max_length=60)
 
@@ -217,6 +242,40 @@ class VoucherIn(BaseModel):
 
 class ProjectIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    locations: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("locations")
+    @classmethod
+    def clean_locations(cls, values: list[str]) -> list[str]:
+        cleaned = []
+        seen = set()
+        for value in values:
+            location = value.strip()[:240]
+            key = location.casefold()
+            if location and key not in seen:
+                seen.add(key)
+                cleaned.append(location)
+        return cleaned
+
+
+class ProjectPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    locations: list[str] | None = Field(default=None, max_length=100)
+
+    @field_validator("locations")
+    @classmethod
+    def clean_locations(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+        cleaned = []
+        seen = set()
+        for value in values:
+            location = value.strip()[:240]
+            key = location.casefold()
+            if location and key not in seen:
+                seen.add(key)
+                cleaned.append(location)
+        return cleaned
 
 
 class ActionIn(BaseModel):
@@ -234,6 +293,19 @@ def public_user(user: User) -> dict:
         "role": user.role,
         "active": user.active,
         "created_at": user.created_at.isoformat(),
+    }
+
+
+def public_project(project: Project) -> dict:
+    try:
+        locations = json.loads(project.locations_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        locations = []
+    return {
+        "id": project.id,
+        "name": project.name,
+        "locations": locations if isinstance(locations, list) else [],
+        "active": project.active,
     }
 
 
@@ -293,7 +365,7 @@ def get_voucher(db: Session, voucher_id: str) -> Voucher:
         .options(
             selectinload(Voucher.employee),
             selectinload(Voucher.project),
-            selectinload(Voucher.expenses),
+            selectinload(Voucher.expenses).selectinload(ExpenseLine.attachments),
             selectinload(Voucher.events),
             selectinload(Voucher.attachments),
         )
@@ -305,6 +377,7 @@ def get_voucher(db: Session, voucher_id: str) -> Voucher:
 
 def serialize(v: Voucher) -> dict:
     employee = v.employee.display_name if v.employee else "Employee"
+    mediums = list(dict.fromkeys(x.medium for x in v.expenses if x.medium))
     return {
         "id": v.id,
         "employee_id": v.employee_id,
@@ -314,7 +387,7 @@ def serialize(v: Voucher) -> dict:
         "origin": v.origin,
         "destination": v.destination,
         "travel_date": v.travel_date.isoformat(),
-        "medium": v.medium,
+        "medium": ", ".join(mediums) if mediums else v.medium,
         "purpose": v.purpose,
         "amount": str(v.amount),
         "currency": v.currency,
@@ -324,15 +397,26 @@ def serialize(v: Voucher) -> dict:
         "created_at": v.created_at.isoformat(),
         "expenses": [
             {
+                "id": x.id,
                 "category": x.category,
                 "description": x.description,
+                "medium": x.medium or v.medium,
                 "bill_number": x.bill_number,
                 "amount": str(x.amount),
+                "attachments": [
+                    {"id": f.id, "name": f.original_name, "content_type": f.content_type}
+                    for f in x.attachments
+                ],
             }
             for x in v.expenses
         ],
         "attachments": [
-            {"id": x.id, "name": x.original_name, "content_type": x.content_type}
+            {
+                "id": x.id,
+                "name": x.original_name,
+                "content_type": x.content_type,
+                "expense_line_id": x.expense_line_id,
+            }
             for x in v.attachments
         ],
         "events": [
@@ -463,8 +547,19 @@ def update_user(
         )
         if count <= 1:
             raise HTTPException(409, "Keep at least one active administrator")
+    if data.username is not None:
+        username = data.username.strip().lower()
+        duplicate = db.scalar(
+            select(User.id).where(User.username == username, User.id != target.id)
+        )
+        if duplicate:
+            raise HTTPException(409, "That username is already in use")
+        target.username = username
     if data.display_name is not None:
-        target.display_name = data.display_name.strip()
+        display_name = data.display_name.strip()
+        if not display_name:
+            raise HTTPException(422, "Enter the person's full name")
+        target.display_name = display_name
     if data.role is not None:
         target.role = data.role
     if data.active is not None:
@@ -483,7 +578,7 @@ def list_projects(
     projects = db.scalars(
         select(Project).where(Project.active.is_(True)).order_by(Project.name)
     ).all()
-    return [{"id": p.id, "name": p.name} for p in projects]
+    return [public_project(p) for p in projects]
 
 
 @app.post("/api/projects", status_code=201)
@@ -498,11 +593,42 @@ def create_project(
     existing = db.scalar(select(Project).where(func.lower(Project.name) == name.lower()))
     if existing:
         raise HTTPException(409, "That project is already in the list")
-    project = Project(name=name, active=True)
+    project = Project(
+        name=name, active=True, locations_json=json.dumps(data.locations, ensure_ascii=False)
+    )
     db.add(project)
     db.commit()
     db.refresh(project)
-    return {"id": project.id, "name": project.name, "active": project.active}
+    return public_project(project)
+
+
+@app.patch("/api/projects/{project_id}")
+def update_project(
+    project_id: str,
+    data: ProjectPatch,
+    _: Annotated[User, Depends(require_role(Role.ADMIN))],
+    db: Annotated[Session, Depends(db_session)],
+) -> dict:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if data.name is not None:
+        name = data.name.strip()
+        if not name:
+            raise HTTPException(422, "Enter a project name")
+        duplicate = db.scalar(
+            select(Project.id).where(
+                func.lower(Project.name) == name.lower(), Project.id != project.id
+            )
+        )
+        if duplicate:
+            raise HTTPException(409, "That project name is already in use")
+        project.name = name
+    if data.locations is not None:
+        project.locations_json = json.dumps(data.locations, ensure_ascii=False)
+    db.commit()
+    db.refresh(project)
+    return public_project(project)
 
 
 @app.get("/api/vouchers")
@@ -514,7 +640,7 @@ def list_vouchers(
         .options(
             selectinload(Voucher.employee),
             selectinload(Voucher.project),
-            selectinload(Voucher.expenses),
+            selectinload(Voucher.expenses).selectinload(ExpenseLine.attachments),
             selectinload(Voucher.events),
             selectinload(Voucher.attachments),
         )
@@ -550,6 +676,122 @@ def list_vouchers(
     }
 
 
+@app.get("/api/reports/vouchers.csv")
+def export_vouchers_csv(
+    user: CurrentUser,
+    db: Annotated[Session, Depends(db_session)],
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
+    status: str | None = None,
+    project_id: str | None = None,
+    employee_id: str | None = None,
+    search: str | None = None,
+) -> Response:
+    stmt = (
+        select(Voucher)
+        .join(Voucher.employee)
+        .outerjoin(Voucher.project)
+        .options(
+            selectinload(Voucher.employee),
+            selectinload(Voucher.project),
+            selectinload(Voucher.expenses).selectinload(ExpenseLine.attachments),
+            selectinload(Voucher.attachments),
+        )
+        .order_by(Voucher.created_at.desc(), Voucher.id)
+    )
+    if user.role not in {Role.ADMIN, Role.HR, Role.ACCOUNTS}:
+        stmt = stmt.where(Voucher.employee_id == user.id)
+    if from_date:
+        stmt = stmt.where(Voucher.travel_date >= from_date)
+    if to_date:
+        stmt = stmt.where(Voucher.travel_date <= to_date)
+    if status:
+        stmt = stmt.where(Voucher.status == status)
+    if project_id:
+        stmt = stmt.where(Voucher.project_id == project_id)
+    if employee_id and user.role in {Role.ADMIN, Role.HR, Role.ACCOUNTS}:
+        stmt = stmt.where(Voucher.employee_id == employee_id)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Voucher.id.ilike(term),
+                Voucher.purpose.ilike(term),
+                Voucher.origin.ilike(term),
+                Voucher.destination.ilike(term),
+                User.display_name.ilike(term),
+                Project.name.ilike(term),
+                Voucher.expenses.any(
+                    or_(
+                        ExpenseLine.description.ilike(term),
+                        ExpenseLine.bill_number.ilike(term),
+                        ExpenseLine.category.ilike(term),
+                        ExpenseLine.medium.ilike(term),
+                    )
+                ),
+            )
+        )
+    vouchers = db.scalars(stmt).unique().all()
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "Voucher", "Employee", "Username", "Project", "Location", "Travel date",
+            "Travel medium", "Purpose", "Expense category", "Expense description",
+            "Bill number", "Item amount", "Voucher total", "Status", "Payment reference",
+            "Payment date", "Proof files",
+        ]
+    )
+
+    def cell(value: object) -> str:
+        text_value = str(value if value is not None else "")
+        if text_value.startswith(("=", "+", "-", "@", "\t", "\r")):
+            text_value = "'" + text_value
+        return text_value
+
+    for voucher in vouchers:
+        expenses = voucher.expenses or [None]
+        for expense in expenses:
+            files = (
+                [f.original_name for f in expense.attachments]
+                if expense
+                else []
+            )
+            if expense:
+                files.extend(
+                    f.original_name
+                    for f in voucher.attachments
+                    if f.expense_line_id == expense.id
+                )
+            writer.writerow(
+                [
+                    cell(voucher.id),
+                    cell(voucher.employee.display_name if voucher.employee else ""),
+                    cell(voucher.employee.username if voucher.employee else ""),
+                    cell(voucher.project.name if voucher.project else ""),
+                    cell(" → ".join(x for x in [voucher.origin, voucher.destination] if x)),
+                    cell(voucher.travel_date.isoformat()),
+                    cell((expense.medium if expense else None) or voucher.medium),
+                    cell(voucher.purpose),
+                    cell(expense.category if expense else ""),
+                    cell(expense.description if expense else ""),
+                    cell(expense.bill_number if expense else ""),
+                    cell(expense.amount if expense else ""),
+                    cell(voucher.amount),
+                    cell(voucher.status),
+                    cell(voucher.payment_reference),
+                    cell(voucher.payment_date.isoformat() if voucher.payment_date else ""),
+                    cell("; ".join(dict.fromkeys(files))),
+                ]
+            )
+    filename = f"routeback-vouchers-{date.today():%Y%m%d}.csv"
+    return Response(
+        content="\ufeff" + output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/vouchers", status_code=201)
 def create_voucher(
     data: VoucherIn, user: CurrentUser, db: Annotated[Session, Depends(db_session)]
@@ -571,7 +813,7 @@ def create_voucher(
         if data.destination and data.destination.strip()
         else None,
         travel_date=data.travel_date,
-        medium=data.medium,
+        medium=data.medium or data.expenses[0].medium or "Other",
         purpose=data.purpose.strip(),
         amount=total,
         currency="INR",
@@ -581,6 +823,7 @@ def create_voucher(
         ExpenseLine(
             category=x.category,
             description=x.description,
+            medium=x.medium or data.medium or "Other",
             bill_number=x.bill_number,
             amount=x.amount,
         )
@@ -622,6 +865,32 @@ async def upload_attachment(
         raise HTTPException(
             403, "Only the voucher owner can attach proofs before HR review"
         )
+    return await store_attachment(v, file, db)
+
+
+@app.post("/api/vouchers/{voucher_id}/expenses/{expense_line_id}/attachments", status_code=201)
+async def upload_expense_attachment(
+    voucher_id: str,
+    expense_line_id: int,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(db_session)],
+    file: UploadFile = File(...),
+) -> dict:
+    v = get_voucher(db, voucher_id)
+    if v.employee_id != user.id or v.status != Status.HR_REVIEW:
+        raise HTTPException(403, "Only the voucher owner can attach proofs before HR review")
+    expense = next((item for item in v.expenses if item.id == expense_line_id), None)
+    if not expense:
+        raise HTTPException(404, "Expense item not found")
+    return await store_attachment(v, file, db, expense)
+
+
+async def store_attachment(
+    voucher: Voucher,
+    file: UploadFile,
+    db: Session,
+    expense: ExpenseLine | None = None,
+) -> dict:
     suffix = Path(file.filename or "").suffix.lower()
     expected_mime = ALLOWED_FILES.get(suffix)
     if not expected_mime or file.content_type != expected_mime:
@@ -636,12 +905,17 @@ async def upload_attachment(
     ):
         raise HTTPException(415, "The file content does not match its file type")
     safe_name = Path(file.filename or "proof").name[:255]
-    key = f"{v.id}/{uuid4().hex}{suffix}"
+    key = f"{voucher.id}/{uuid4().hex}{suffix}"
     path = UPLOAD_ROOT / key
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(contents)
-    v.attachments.append(
-        Attachment(original_name=safe_name, storage_key=key, content_type=expected_mime)
+    voucher.attachments.append(
+        Attachment(
+            original_name=safe_name,
+            storage_key=key,
+            content_type=expected_mime,
+            expense_line=expense,
+        )
     )
     db.commit()
     return {"name": safe_name, "uploaded": True}

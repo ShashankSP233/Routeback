@@ -1186,3 +1186,32 @@ tbody tr:hover {
 .view-tab.active { border-bottom-color: var(--accent); color: var(--ink); }
 @media (max-width: 1050px) { .metrics-global { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .metrics-global { grid-template-columns: repeat(2, minmax(0, 1fr)); } .view-tabs { gap: 12px; overflow-x: auto; } }
+
+/* User, project, voucher filter and expense-level proof improvements */
+.filter-bar { flex-wrap: wrap; align-items: center; }
+.filter-bar input[type="date"] { width: 145px; }
+.filter-date { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.filter-date input { width: 145px; }
+.filter-count { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.table-secondary { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+.user-row-actions { min-width: 260px; white-space: nowrap; }
+.user-row-actions .btn + .btn { margin-left: 4px; }
+.location-tag { display: inline-block; margin: 2px 4px 2px 0; padding: 3px 8px; border-radius: 12px; background: var(--accent-light); color: var(--accent); font-size: 11px; }
+.expense-detail-row { padding: 11px 0; border-bottom: 1px solid var(--line); }
+.expense-detail-main { display: grid; grid-template-columns: minmax(120px, 1fr) auto auto; align-items: center; gap: 6px 14px; }
+.expense-detail-main > span, .expense-detail-main > small { color: var(--muted); font-size: 11px; }
+.expense-detail-main > small { grid-column: 1 / 3; }
+.expense-detail-main > strong { grid-column: 3; grid-row: 1 / span 2; white-space: nowrap; }
+.expense-detail-proofs { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 7px; margin-top: 8px; }
+.expense-detail-proofs .proof { margin-top: 0; }
+.expense-proof-upload { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--accent); font-size: 11px; cursor: pointer; }
+.expense-proof-upload input { max-width: 240px; font-size: 11px; }
+.user-filters { padding: 12px 14px 0; }
+@media (max-width: 760px) {
+  .filter-bar > input, .filter-bar > select, .filter-bar .filter-date, .filter-date input { width: 100%; }
+  .filter-count { margin-left: 0; }
+  .expense-detail-main { grid-template-columns: 1fr auto; }
+  .expense-detail-main > span { grid-column: 1; }
+  .expense-detail-main > strong { grid-column: 2; grid-row: 1 / span 3; }
+  .expense-detail-main > small { grid-column: 1; }
+}
