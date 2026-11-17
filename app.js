@@ -78,6 +78,8 @@ function normalise(v) {
       x.attachments || [],
       x.id,
       Boolean(x.is_gst),
+      x.gross_amount == null ? null : Number(x.gross_amount),
+      x.gst_amount == null ? null : Number(x.gst_amount),
     ]),
     proofs: v.attachments || [],
     trail: (v.events || []).map((x) => [
@@ -684,7 +686,7 @@ function renderExpenseItems() {
   const container = $("#expenseItems");
   if (!container) return;
   container.innerHTML = S.expenseItems
-    .map((item, index) => `<div class="expense-item-card" data-expense-index="${index}"><div class="expense-item-top"><strong>Item ${index + 1}</strong><button type="button" class="btn btn-small" data-remove-expense="${index}" ${S.expenseItems.length === 1 ? "disabled" : ""}>Remove</button></div><div class="form-grid"><div class="form-field"><label>Expense type</label><select data-expense-field="category"><option ${item.category === "Airfare" ? "selected" : ""}>Airfare</option><option ${item.category === "Public transport" ? "selected" : ""}>Public transport</option><option ${item.category === "Food" ? "selected" : ""}>Food</option><option ${item.category === "Others" ? "selected" : ""}>Others</option></select></div><div class="form-field"><label>Travel mode</label><select data-expense-field="medium">${travelMediums.map((medium) => `<option ${item.medium === medium ? "selected" : ""}>${esc(medium)}</option>`).join("")}</select></div><div class="form-field"><label>Amount (₹) · total${item.is_gst ? ", including GST" : ""}</label><input data-expense-field="amount" type="number" min="0.01" step="0.01" required value="${esc(item.amount)}" placeholder="0.00"></div><div class="form-field"><label>GST included?</label><select data-expense-field="is_gst"><option value="false" ${!item.is_gst ? "selected" : ""}>No</option><option value="true" ${item.is_gst ? "selected" : ""}>Yes</option></select><small class="form-hint">When Yes, enter the full bill total including GST; Accounts calculates the GST component.</small></div><div class="form-field"><label>Bill number · optional</label><input data-expense-field="bill_number" maxlength="120" value="${esc(item.bill_number)}" placeholder="e.g. INV-1042"></div><div class="form-field full"><label>Description</label><input data-expense-field="description" maxlength="1000" required value="${esc(item.description)}" placeholder="Fare, meal, etc."></div><div class="form-field full"><label>Bill / receipt${["Airfare", "Public transport"].includes(item.category) ? " · required" : " · optional"}</label><div class="upload"><input type="file" data-expense-proof="${index}" ${["Airfare", "Public transport"].includes(item.category) && !item.files.length ? "required" : ""} multiple accept=".pdf,.png,.jpg,.jpeg"><div class="selected-proof-list">${item.files.map((file, fileIndex) => `<div class="selected-proof"><span>${esc(file.name)}</span><button type="button" class="btn btn-small" data-remove-item-proof="${fileIndex}">Remove</button></div>`).join("")}</div></div></div></div></div>`)
+    .map((item, index) => `<div class="expense-item-card" data-expense-index="${index}"><div class="expense-item-top"><strong>Item ${index + 1}</strong><button type="button" class="btn btn-small" data-remove-expense="${index}" ${S.expenseItems.length === 1 ? "disabled" : ""}>Remove</button></div><div class="form-grid"><div class="form-field"><label>Expense type</label><select data-expense-field="category"><option ${item.category === "Airfare" ? "selected" : ""}>Airfare</option><option ${item.category === "Public transport" ? "selected" : ""}>Public transport</option><option ${item.category === "Food" ? "selected" : ""}>Food</option><option ${item.category === "Others" ? "selected" : ""}>Others</option></select></div><div class="form-field" ${item.category === "Food" ? "hidden" : ""}><label>Travel mode</label><select data-expense-field="medium">${travelMediums.map((medium) => `<option ${item.medium === medium ? "selected" : ""}>${esc(medium)}</option>`).join("")}</select></div><div class="form-field"><label>Amount (₹) · total${item.is_gst ? ", including GST" : ""}</label><input data-expense-field="amount" type="number" min="0.01" step="0.01" required value="${esc(item.amount)}" placeholder="0.00"></div><div class="form-field"><label>GST included?</label><select data-expense-field="is_gst"><option value="false" ${!item.is_gst ? "selected" : ""}>No</option><option value="true" ${item.is_gst ? "selected" : ""}>Yes</option></select><small class="form-hint">When Yes, enter the full bill total including GST; Accounts records the gross and GST amounts.</small></div><div class="form-field"><label>Bill number${item.is_gst ? " · required for GST" : " · optional"}</label><input data-expense-field="bill_number" maxlength="120" ${item.is_gst ? "required" : ""} value="${esc(item.bill_number)}" placeholder="e.g. INV-1042"></div><div class="form-field full"><label>Description</label><input data-expense-field="description" maxlength="1000" required value="${esc(item.description)}" placeholder="Fare, meal, etc."></div><div class="form-field full"><label>Bill / receipt${["Airfare", "Public transport"].includes(item.category) ? " · required" : " · optional"}</label><div class="upload"><input type="file" data-expense-proof="${index}" ${["Airfare", "Public transport"].includes(item.category) && !item.files.length ? "required" : ""} multiple accept=".pdf,.png,.jpg,.jpeg"><div class="selected-proof-list">${item.files.map((file, fileIndex) => `<div class="selected-proof"><span>${esc(file.name)}</span><button type="button" class="btn btn-small" data-remove-item-proof="${fileIndex}">Remove</button></div>`).join("")}</div></div></div></div></div>`)
     .join("");
   container.querySelectorAll("[data-expense-field]").forEach((field) => {
     field.addEventListener("input", updateExpenseField);
@@ -723,7 +725,11 @@ function updateExpenseField(event) {
   const field = event.target.dataset.expenseField;
   if (card && field) {
     const value = field === "is_gst" ? event.target.value === "true" : event.target.value;
-    S.expenseItems[Number(card.dataset.expenseIndex)][field] = value;
+    const item = S.expenseItems[Number(card.dataset.expenseIndex)];
+    item[field] = value;
+    if (field === "category") {
+      item.medium = value === "Food" ? null : item.medium || travelMediums[0];
+    }
   }
   updateExpenseTotal();
 }
@@ -775,7 +781,7 @@ async function submitVoucher(e) {
         expenses: S.expenseItems.map((item) => ({
           category: item.category,
           description: item.description,
-          medium: item.medium,
+          medium: item.medium || null,
           bill_number: item.bill_number || null,
           amount: item.amount,
           is_gst: item.is_gst,
@@ -916,12 +922,22 @@ function detail(v) {
         (S.user.role === "accounts" && v.status === "Accounts review"));
   const proofMarkup = (f) => `<div class="proof proof-file"><strong>${esc(f.name)}</strong><div class="proof-actions"><button type="button" class="btn btn-small" data-preview-file="${f.id}" data-file-name="${esc(f.name)}" data-file-type="${esc(f.content_type)}">View</button><a class="btn btn-small" href="/api/attachments/${f.id}?download=true">Download</a></div></div>`;
   const attachments = v.proofs.filter((file) => !file.expense_line_id).map(proofMarkup).join("") || '<div class="proof">No unassigned proof files</div>';
-  const expenseBreakdown = v.lines.map((item) => `<div class="expense-detail-row"><div class="expense-detail-main"><b>${esc(item[0])}</b><span>${esc(item[1])} · ${esc(item[4] || "Travel mode not recorded")}</span>${item[3] ? `<small>Bill number: ${esc(item[3])}</small>` : ""}${item[7] ? '<small>GST included in the submitted total</small>' : ""}<strong>${money(item[2])}</strong></div><div class="expense-detail-proofs">${(item[5] || []).map(proofMarkup).join("") || '<span class="subhead">No proof attached to this item.</span>'}</div>${v.employee_id === S.user.id && v.status === "HR review" ? `<label class="expense-proof-upload">Add proof for this item<input type="file" data-expense-proof-upload="${item[6]}" multiple accept=".pdf,.png,.jpg,.jpeg"></label>` : ""}</div>`).join("");
+  const accountsEnteringGst =
+    S.user.role === "accounts" && v.status === "Accounts review";
+  const expenseBreakdown = v.lines.map((item) => {
+    const categoryAndMode = [item[1], item[4]].filter(Boolean).join(" · ");
+    const gstBreakdown = !item[7]
+      ? ""
+      : accountsEnteringGst
+        ? `<div class="expense-gst-entry" data-gst-expense-id="${item[6]}" data-total-amount="${item[2]}"><div class="form-field"><label>Gross amount (before GST)</label><input data-gst-field="gross_amount" type="number" min="0.01" step="0.01" required value="${item[8] ?? ""}" placeholder="0.00"></div><div class="form-field"><label>GST amount</label><input data-gst-field="gst_amount" type="number" min="0" step="0.01" required value="${item[9] ?? ""}" placeholder="0.00"></div><div class="expense-gst-total"><span>Total amount</span><strong>${money(item[2])}</strong></div></div>`
+        : `<div class="expense-gst-summary"><span>Gross amount (before GST): <b>${item[8] == null ? "—" : money(item[8])}</b></span><span>GST amount: <b>${item[9] == null ? "—" : money(item[9])}</b></span><span>Total amount: <b>${money(item[2])}</b></span></div>`;
+    return `<div class="expense-detail-row"><div class="expense-detail-main"><b>${esc(item[0])}</b><span>${esc(categoryAndMode)}</span>${item[3] ? `<small>Bill number: ${esc(item[3])}</small>` : ""}${item[7] ? '<small>GST bill · enter amounts below during Accounts review</small>' : ""}<strong>${money(item[2])}</strong></div>${gstBreakdown}<div class="expense-detail-proofs">${(item[5] || []).map(proofMarkup).join("") || '<span class="subhead">No proof attached to this item.</span>'}</div>${v.employee_id === S.user.id && v.status === "HR review" ? `<label class="expense-proof-upload">Add proof for this item<input type="file" data-expense-proof-upload="${item[6]}" multiple accept=".pdf,.png,.jpg,.jpeg"></label>` : ""}</div>`;
+  }).join("");
   const gstCalculationNotice =
     S.user.role === "accounts" &&
     v.status === "Accounts review" &&
     v.lines.some((item) => item[7])
-      ? '<div class="banner" style="margin-bottom:12px">GST is included in the submitted total for the marked expense items. Accounts: calculate the GST component from those totals; do not add GST again to the claim.</div>'
+      ? '<div class="banner" style="margin-bottom:12px">Enter the gross amount before GST and the GST amount for each GST-marked item. Their sum must match the submitted total.</div>'
       : "";
   let payFields =
     S.user.role === "accounts" &&
@@ -948,7 +964,7 @@ function detail(v) {
     : canEditNote
       ? `${noteFields}${v.status !== "Printing" ? '<div class="banner" style="margin-top:10px">The voucher has already completed its approval route. Complete any missing note details, then print it without changing the voucher status.</div>' : ""}`
       : canReprintNote
-        ? `<div class="detail-kv" style="margin:12px 0"><div class="kv"><label>Addressed to</label><b>${esc(v.approval_recipient)}</b></div>${v.project ? `<div class="kv"><label>Project name or code</label><b>${esc(approvalProjectReference(v))}</b></div>` : ""}<div class="kv"><label>Paying from</label><b>${esc(v.payment_account)}</b></div><div class="kv"><label>Payment medium</label><b>${esc(v.payment_method === "account_transfer" ? "Account transfer" : "Cash")}</b></div></div><button class="btn btn-primary" data-action="reprintNote">Reprint approval note →</button>`
+        ? `<div class="detail-kv" style="margin:12px 0"><div class="kv"><label>Addressed to</label><b>${esc(v.approval_recipient)}</b></div>${v.project ? `<div class="kv"><label>Project name or code</label><b>${esc(approvalProjectReference(v))}</b></div>` : ""}<div class="kv"><label>Paying from</label><b>${esc(v.payment_account)}</b></div><div class="kv"><label>Payment medium</label><b>${esc(v.payment_method === "account_transfer" ? "Account transfer" : "Cash")}</b></div></div><div id="printNoteError" class="login-error" role="alert"></div><button class="btn btn-primary" type="button" data-action="reprintNote">Reprint approval note →</button>`
         : `<div class="banner" style="margin:12px 0">${v.status === "Rejected" ? "Rejected vouchers do not have a final approval note to print." : "The approval note is available after HR, Admin and Accounts approvals are complete."}</div><button class="btn" type="button" disabled>Print approval note</button>`;
   const paymentSummary =
     v.payment_account &&
@@ -1081,7 +1097,7 @@ function approvalNoteDocument(v, logoDataUrl) {
     [v.from, v.to].filter(Boolean).join(" → ") || v.project || "Site travel";
   const subject = `Site travel reimbursement · ${dateRange(v.date, v.endDate)}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Approval note ${esc(v.id)}</title><style>
-    @page{size:A4 portrait;margin:14mm}*{box-sizing:border-box}body{margin:0;color:#202b30;font:11px/1.45 Arial,sans-serif}.page{width:100%}.approval-page{min-height:267mm;display:flex;flex-direction:column}.note-header{position:relative;text-align:center;margin-bottom:8px}.brand-lockup{display:flex;align-items:center;justify-content:center;gap:8px;margin:0 auto 4px}.brand-mark{width:55px;height:29px;overflow:hidden;flex:0 0 auto}.note-logo{display:block;width:55px;height:auto;margin:0}.company-name{font-size:18px;font-weight:bold;letter-spacing:1.2px;color:#b11f45}.serial{position:absolute;right:0;top:3px;font-size:7px}h1{text-align:center;font-size:19px;letter-spacing:1px;margin:0 0 12px}.meta,.fund,.annexure{width:100%;border-collapse:collapse}.meta{margin:9px 0}.meta td{border:1px solid #89969b;padding:5px 7px;vertical-align:top}.meta td:first-child,.meta td:nth-child(3){font-weight:bold;white-space:nowrap;width:75px}.meta td:nth-child(2){width:38%}.section-title{font-size:12px;font-weight:bold;margin:13px 0 6px}.fund th,.fund td,.annexure th,.annexure td{border:1px solid #89969b;padding:5px;text-align:left;vertical-align:top}.fund th,.annexure th{background:#edf1f2}.fund th:first-child{width:48px}.project-code{display:block;font-size:9px;color:#526168}.fund-total{width:42%;margin:0 0 7px auto;border-collapse:collapse}.fund-total td{border:1px solid #89969b;padding:5px 7px}.fund-total td:first-child{font-weight:bold}.fund-total td:last-child{text-align:right;font-weight:bold;white-space:nowrap}.amount{text-align:right!important;white-space:nowrap}.words{margin:8px 0}.purpose{border:1px solid #89969b;padding:8px;min-height:42px;margin:9px 0}.payment{margin:8px 0}.payment p{margin:3px 0}.digital-section{margin-top:12px}.digital-section h2{font-size:12px;margin:0 0 6px;text-transform:uppercase}.digital-signatures{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 10px}.digital-signatures .signature{min-height:54px;border:1px solid #89969b;padding:6px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px;text-align:center;overflow-wrap:anywhere}.digital-signatures .signature:last-child:nth-child(odd){grid-column:1/-1;width:calc(50% - 5px);justify-self:center}.signature strong{font-size:10px}.signature small{font-size:9px;color:#526168}.verified-mark{align-self:center;border-radius:4px;padding:2px 5px;background:#e4f2e8;color:#24623b;font-size:8px;text-transform:uppercase;letter-spacing:.3px}.physical-signatures{display:grid;grid-template-columns:repeat(2,1fr);gap:30px;margin-top:auto;padding-top:34mm}.physical-signatures .signature{min-height:45px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;text-align:center;padding:0 15mm}.sign-line{width:100%;border-top:1px solid #38484e;margin-bottom:5px}.signature strong{font-size:10px}.signature small{font-size:9px;color:#526168}.annexure-page{break-before:page;page-break-before:always}.annexure th,.annexure td{font-size:8px}tfoot{font-weight:bold}@media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.annexure-page{break-before:page;page-break-before:always}}
+    @page{size:A4 portrait;margin:0}*{box-sizing:border-box}body{margin:0;color:#202b30;font:11px/1.45 Arial,sans-serif}.page{width:100%}.approval-page{height:297mm;min-height:297mm;padding:14mm;display:flex;flex-direction:column}.note-header{position:relative;text-align:center;margin-bottom:8px}.brand-lockup{display:flex;align-items:center;justify-content:center;gap:8px;margin:0 auto 4px}.brand-mark{width:55px;height:29px;overflow:hidden;flex:0 0 auto}.note-logo{display:block;width:55px;height:auto;margin:0}.company-name{font-size:18px;font-weight:bold;letter-spacing:1.2px;color:#b11f45}.serial{position:absolute;right:0;top:3px;font-size:7px}h1{text-align:center;font-size:19px;letter-spacing:1px;margin:0 0 12px}.meta,.fund,.annexure{width:100%;border-collapse:collapse}.meta{margin:9px 0}.meta td{border:1px solid #89969b;padding:5px 7px;vertical-align:top}.meta td:first-child,.meta td:nth-child(3){font-weight:bold;white-space:nowrap;width:75px}.meta td:nth-child(2){width:38%}.section-title{font-size:12px;font-weight:bold;margin:13px 0 6px}.fund th,.fund td,.annexure th,.annexure td{border:1px solid #89969b;padding:5px;text-align:left;vertical-align:top}.fund th,.annexure th{background:#edf1f2}.fund th:first-child{width:48px}.project-code{display:block;font-size:9px;color:#526168}.fund-total{width:42%;margin:0 0 7px auto;border-collapse:collapse}.fund-total td{border:1px solid #89969b;padding:5px 7px}.fund-total td:first-child{font-weight:bold}.fund-total td:last-child{text-align:right;font-weight:bold;white-space:nowrap}.amount{text-align:right!important;white-space:nowrap}.words{margin:8px 0}.purpose{border:1px solid #89969b;padding:8px;min-height:42px;margin:9px 0}.payment{margin:8px 0}.payment p{margin:3px 0}.digital-section{margin-top:12px}.digital-section h2{font-size:12px;margin:0 0 6px;text-transform:uppercase}.digital-signatures{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 10px}.digital-signatures .signature{min-height:54px;border:1px solid #89969b;padding:6px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px;text-align:center;overflow-wrap:anywhere}.digital-signatures .signature:last-child:nth-child(odd){grid-column:1/-1;width:calc(50% - 5px);justify-self:center}.signature strong{font-size:10px}.signature small{font-size:9px;color:#526168}.verified-mark{align-self:center;border-radius:4px;padding:2px 5px;background:#e4f2e8;color:#24623b;font-size:8px;text-transform:uppercase;letter-spacing:.3px}.physical-signatures{display:grid;grid-template-columns:repeat(2,1fr);gap:30px;margin-top:auto;padding-top:34mm}.physical-signatures .signature{min-height:45px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;text-align:center;padding:0 15mm}.sign-line{width:100%;border-top:1px solid #38484e;margin-bottom:5px}.signature strong{font-size:10px}.signature small{font-size:9px;color:#526168}.annexure-page{min-height:297mm;padding:14mm;-webkit-box-decoration-break:clone;box-decoration-break:clone;break-before:page;page-break-before:always}.annexure th,.annexure td{font-size:8px}tfoot{font-weight:bold}@media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.annexure-page{break-before:page;page-break-before:always}}
     </style></head><body><main class="page"><section class="approval-page"><header class="note-header"><div class="brand-lockup"><span class="brand-mark"><img class="note-logo" src="${esc(logoDataUrl)}" alt="DHARTI logo"></span><span class="company-name">DHARTI</span></div><span class="serial">SR. NO. ${esc(v.id)}</span><h1>APPROVAL NOTE</h1></header><table class="meta"><tr><td>Request No.</td><td>${esc(v.id)}</td><td>Date</td><td>${esc(currentDate)}</td></tr><tr><td>To</td><td colspan="3">${esc(v.approval_recipient)}</td></tr>${employeeName ? `<tr><td>From</td><td colspan="3">${esc(employeeName)}</td></tr>` : ""}<tr><td>Subject</td><td colspan="3">${esc(subject)}</td></tr></table><div class="section-title">Project-wise Fund Requirement</div><table class="fund"><thead><tr><th>Sr. No.</th><th>Project</th><th class="amount">Requested Amount (Rs.)</th></tr></thead><tbody><tr><td>1</td><td><strong>${esc(project)}</strong>${projectCodeMarkup}</td><td class="amount">${money(v.total)}</td></tr></tbody></table><table class="fund-total"><tbody><tr><td>Total Request Amount</td><td>${money(v.total)}</td></tr></tbody></table><p class="words"><strong>Amount in Words:</strong> ${esc(amountInWords(v.total))}</p><div class="purpose"><strong>Purpose:</strong> ${esc(v.purpose)} · ${esc(purposeLocation)}</div><div class="payment">${employeeName ? `<p><strong>Payment To:</strong> ${esc(employeeName)}</p>` : ""}<p><strong>Paid From:</strong> ${esc(v.payment_account)}</p><p><strong>Mode:</strong> ${esc(paymentMethod)}</p></div><section class="digital-section"><h2>Digital Verification</h2><div class="digital-signatures">${signatureMarkup}</div></section><div class="physical-signatures">${physicalSignatures}</div></section><section class="annexure-page"><h1>ANNEXURE</h1><p><strong>Project / Site:</strong> ${esc(project)} · <strong>Project name / code:</strong> ${esc(projectCode)} · <strong>Request No.:</strong> ${esc(v.id)}</p><table class="annexure"><thead><tr><th>Sr.</th><th>Voucher No.</th><th>Travel Date(s)</th><th>Created By</th><th>Site / Location</th><th>Category</th><th>Details</th><th>Bill No.</th><th>Bill</th><th>Amount</th></tr></thead><tbody>${expenseRows || '<tr><td colspan="10">No expense items recorded.</td></tr>'}</tbody><tfoot><tr><td colspan="9">Project Total</td><td class="amount">${money(v.total)}</td></tr></tfoot></table></section></main></body></html>`;
 }
 async function printApprovalNote(v, reprint = false) {
@@ -1163,6 +1179,41 @@ async function printApprovalNote(v, reprint = false) {
 }
 async function advance(v, action) {
   let payload = { action };
+  if (
+    action === "approve" &&
+    S.user.role === "accounts" &&
+    v.status === "Accounts review"
+  ) {
+    const entries = [...document.querySelectorAll(".expense-gst-entry")];
+    payload.gst_breakdown = [];
+    for (const entry of entries) {
+      const grossInput = entry.querySelector('[data-gst-field="gross_amount"]');
+      const gstInput = entry.querySelector('[data-gst-field="gst_amount"]');
+      const grossAmount = Number(grossInput.value);
+      const gstAmount = Number(gstInput.value);
+      if (
+        !grossInput.value ||
+        !gstInput.value ||
+        !grossInput.validity.valid ||
+        !gstInput.validity.valid
+      ) {
+        toast("Enter gross and GST amounts for every GST-marked expense");
+        (grossInput.value ? gstInput : grossInput).focus();
+        return;
+      }
+      const totalCents = Math.round(Number(entry.dataset.totalAmount) * 100);
+      if (Math.round(grossAmount * 100) + Math.round(gstAmount * 100) !== totalCents) {
+        toast("Gross amount plus GST amount must equal the submitted total");
+        grossInput.focus();
+        return;
+      }
+      payload.gst_breakdown.push({
+        expense_id: Number(entry.dataset.gstExpenseId),
+        gross_amount: grossAmount.toFixed(2),
+        gst_amount: gstAmount.toFixed(2),
+      });
+    }
+  }
   if (action === "start_payment" && (
     $("#approvalRecipient").value.trim() !== v.approval_recipient ||
     ($("#approvalProjectCode")?.value.trim() || "") !== (v.approval_project_code || "") ||

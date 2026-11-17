@@ -147,6 +147,8 @@ class ExpenseLine(Base):
     bill_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     is_gst: Mapped[bool] = mapped_column(default=False, nullable=False)
+    gross_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    gst_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     attachments: Mapped[list["Attachment"]] = relationship(
         back_populates="expense_line", cascade="all, delete-orphan"
     )

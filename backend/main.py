@@ -172,6 +172,18 @@ async def lifespan(_: FastAPI):
                 "is_gst BOOLEAN NOT NULL DEFAULT FALSE"
             )
         )
+        connection.execute(
+            text(
+                "ALTER TABLE travel_expense_lines ADD COLUMN IF NOT EXISTS "
+                "gross_amount NUMERIC(12, 2)"
+            )
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE travel_expense_lines ADD COLUMN IF NOT EXISTS "
+                "gst_amount NUMERIC(12, 2)"
+            )
+        )
     with SessionLocal() as db:
         if not db.scalar(select(User.id).limit(1)):
             password = os.getenv("INITIAL_ADMIN_PASSWORD", "")
@@ -317,6 +329,22 @@ class ExpenseIn(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
     is_gst: bool = False
 
+    @model_validator(mode="after")
+    def validate_gst_bill_and_food_mode(self) -> "ExpenseIn":
+        if self.is_gst and not (self.bill_number or "").strip():
+            raise ValueError("Bill number is required when GST is included")
+        if self.bill_number is not None:
+            self.bill_number = self.bill_number.strip() or None
+        if self.category == "Food":
+            self.medium = None
+        return self
+
+
+class ExpenseGSTIn(BaseModel):
+    expense_id: int = Field(gt=0)
+    gross_amount: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
+    gst_amount: Decimal = Field(ge=0, max_digits=10, decimal_places=2)
+
 
 class VoucherIn(BaseModel):
     project_id: str | None = None
@@ -386,6 +414,7 @@ class ActionIn(BaseModel):
     payment_method: Literal["cash", "account_transfer"] | None = None
     approval_recipient: str | None = Field(default=None, max_length=200)
     approval_project_code: str | None = Field(default=None, max_length=80)
+    gst_breakdown: list[ExpenseGSTIn] | None = Field(default=None, max_length=60)
 
 
 def public_user(user: User) -> dict:
@@ -504,7 +533,11 @@ def serialize(v: Voucher) -> dict:
         "travel_date": v.travel_date.isoformat(),
         "travel_start_date": v.travel_date.isoformat(),
         "travel_end_date": v.travel_end_date.isoformat(),
-        "medium": ", ".join(mediums) if mediums else v.medium,
+        "medium": ", ".join(mediums)
+        if mediums
+        else "Not applicable"
+        if v.expenses and all(x.category == "Food" for x in v.expenses)
+        else v.medium,
         "purpose": v.purpose,
         "amount": str(v.amount),
         "currency": v.currency,
@@ -526,10 +559,12 @@ def serialize(v: Voucher) -> dict:
                 "id": x.id,
                 "category": x.category,
                 "description": x.description,
-                "medium": x.medium or v.medium,
+                "medium": x.medium,
                 "bill_number": x.bill_number,
                 "amount": str(x.amount),
                 "is_gst": x.is_gst,
+                "gross_amount": str(x.gross_amount) if x.gross_amount is not None else None,
+                "gst_amount": str(x.gst_amount) if x.gst_amount is not None else None,
                 "attachments": [
                     {"id": f.id, "name": f.original_name, "content_type": f.content_type}
                     for f in x.attachments
@@ -1312,7 +1347,8 @@ def export_vouchers_csv(
             "Voucher", "Employee", "Username", "Project", "Location", "Travel from",
             "Travel to",
             "Travel medium", "Purpose", "Expense category", "Expense description",
-            "Bill number", "Item amount (GST-inclusive where applicable)", "GST included",
+            "Bill number", "Gross amount (before GST)", "GST amount", "Total amount",
+            "GST included",
             "Voucher total", "Status", "Payment reference", "Payment date", "Proof files",
         ]
     )
@@ -1346,11 +1382,21 @@ def export_vouchers_csv(
                     cell(" → ".join(x for x in [voucher.origin, voucher.destination] if x)),
                     cell(voucher.travel_date.isoformat()),
                     cell(voucher.travel_end_date.isoformat()),
-                    cell((expense.medium if expense else None) or voucher.medium),
+                    cell(expense.medium if expense else voucher.medium),
                     cell(voucher.purpose),
                     cell(expense.category if expense else ""),
                     cell(expense.description if expense else ""),
                     cell(expense.bill_number if expense else ""),
+                    cell(
+                        expense.gross_amount
+                        if expense and expense.is_gst
+                        else ""
+                    ),
+                    cell(
+                        expense.gst_amount
+                        if expense and expense.is_gst
+                        else ""
+                    ),
                     cell(expense.amount if expense else ""),
                     cell("Yes" if expense and expense.is_gst else "No" if expense else ""),
                     cell(voucher.amount),
@@ -1390,7 +1436,9 @@ def create_voucher(
         else None,
         travel_date=data.travel_date,
         travel_end_date=data.travel_end_date,
-        medium=data.medium or data.expenses[0].medium or "Other",
+        medium=data.medium
+        or next((expense.medium for expense in data.expenses if expense.medium), None)
+        or "Other",
         purpose=data.purpose.strip(),
         amount=total,
         currency="INR",
@@ -1400,7 +1448,9 @@ def create_voucher(
         ExpenseLine(
             category=x.category,
             description=x.description,
-            medium=x.medium or data.medium or "Other",
+            medium=None
+            if x.category == "Food"
+            else x.medium or data.medium or "Other",
             bill_number=x.bill_number,
             amount=x.amount,
             is_gst=x.is_gst,
@@ -1693,6 +1743,30 @@ def voucher_action(
                     422,
                     "Attach a bill to every Airfare and Public transport expense before HR can verify",
                 )
+        if action == "approve" and v.status == Status.ACCOUNTS_REVIEW:
+            gst_expenses = [expense for expense in v.expenses if expense.is_gst]
+            breakdown = data.gst_breakdown or []
+            breakdown_by_id = {item.expense_id: item for item in breakdown}
+            gst_expense_ids = {expense.id for expense in gst_expenses}
+            if (
+                len(breakdown_by_id) != len(breakdown)
+                or set(breakdown_by_id) != gst_expense_ids
+            ):
+                raise HTTPException(
+                    422,
+                    "Enter gross and GST amounts for every GST-marked expense",
+                )
+            for expense in gst_expenses:
+                amounts = breakdown_by_id[expense.id]
+                if amounts.gross_amount + amounts.gst_amount != expense.amount:
+                    raise HTTPException(
+                        422,
+                        "Gross amount plus GST amount must equal the submitted total for every GST bill",
+                    )
+            for expense in gst_expenses:
+                amounts = breakdown_by_id[expense.id]
+                expense.gross_amount = amounts.gross_amount
+                expense.gst_amount = amounts.gst_amount
         if action == "mark_paid":
             if not data.payment_date:
                 raise HTTPException(422, "Payment date is required")

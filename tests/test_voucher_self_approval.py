@@ -10,15 +10,18 @@ os.environ.setdefault(
 )
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from backend.database import Base
 from backend.main import (
     ActionIn,
+    ExpenseIn,
     approval_note_html,
     approval_project_reference,
     approval_signature_event,
+    export_vouchers_csv,
     get_voucher,
     list_vouchers,
     voucher_action,
@@ -99,6 +102,96 @@ class VoucherSelfApprovalTests(unittest.TestCase):
                 )
                 self.assertEqual(result["status"], next_status)
                 self.assertEqual(result["events"][-1]["action"], action)
+
+    def test_gst_expenses_require_bill_number_and_food_ignores_travel_mode(self):
+        with self.assertRaises(ValidationError):
+            ExpenseIn(
+                category="Food",
+                description="Meal",
+                amount=Decimal("100.00"),
+                is_gst=True,
+            )
+
+        food = ExpenseIn(
+            category="Food",
+            description="Meal",
+            medium="Train",
+            amount=Decimal("100.00"),
+        )
+        self.assertIsNone(food.medium)
+
+    def test_accounts_approval_saves_valid_gst_breakdown(self):
+        accounts, voucher = self.create_voucher(
+            Role.ACCOUNTS, Status.ACCOUNTS_REVIEW, "gst-breakdown"
+        )
+        expense = ExpenseLine(
+            voucher_id=voucher.id,
+            category="Food",
+            description="Team meal",
+            bill_number="INV-42",
+            amount=Decimal("118.00"),
+            is_gst=True,
+        )
+        self.db.add(expense)
+        self.db.commit()
+        self.db.refresh(voucher)
+
+        for breakdown in (
+            None,
+            [{"expense_id": expense.id, "gross_amount": "100.00", "gst_amount": "17.00"}],
+        ):
+            with self.subTest(breakdown=breakdown):
+                with self.assertRaises(HTTPException) as error:
+                    voucher_action(
+                        voucher.id,
+                        ActionIn(action="approve", gst_breakdown=breakdown),
+                        accounts,
+                        self.db,
+                    )
+                self.assertEqual(error.exception.status_code, 422)
+
+        result = voucher_action(
+            voucher.id,
+            ActionIn(
+                action="approve",
+                gst_breakdown=[
+                    {
+                        "expense_id": expense.id,
+                        "gross_amount": "100.00",
+                        "gst_amount": "18.00",
+                    }
+                ],
+            ),
+            accounts,
+            self.db,
+        )
+        self.assertEqual(result["status"], Status.PRINTING)
+        self.assertEqual(result["expenses"][0]["gross_amount"], "100.00")
+        self.assertEqual(result["expenses"][0]["gst_amount"], "18.00")
+
+    def test_csv_report_includes_accounts_gst_breakdown(self):
+        accounts, voucher = self.create_voucher(
+            Role.ACCOUNTS, Status.CLOSED, "gst-csv"
+        )
+        expense = ExpenseLine(
+            voucher_id=voucher.id,
+            category="Food",
+            description="Team meal",
+            bill_number="INV-43",
+            amount=Decimal("118.00"),
+            is_gst=True,
+            gross_amount=Decimal("100.00"),
+            gst_amount=Decimal("18.00"),
+        )
+        self.db.add(expense)
+        self.db.commit()
+
+        response = export_vouchers_csv(
+            accounts, self.db, None, None, None, None, None, None
+        )
+        csv_text = response.body.decode("utf-8-sig")
+        self.assertIn("Gross amount (before GST),GST amount,Total amount", csv_text)
+        self.assertIn("INV-43,100.00,18.00,118.00,Yes", csv_text)
 
     def test_owner_cannot_approve_before_their_stage_or_process_own_payment(self):
         admin, voucher = self.create_voucher(
