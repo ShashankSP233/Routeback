@@ -19,28 +19,34 @@ On first startup, RouteBack creates its tables and the initial administrator if 
 ## Roles and access
 
 - **Employee:** submits vouchers, sees only vouchers submitted by their own account, and confirms receipt of their own payment.
-- **HR:** reviews submitted vouchers. Multiple active accounts can have the HR role.
+- **HR:** reviews submitted vouchers and employee sign-up requests. Approving a sign-up creates an active Employee account; multiple active accounts can have the HR role.
 - **Admin:** approves after HR and manages user accounts and role assignments. Multiple admin accounts are supported; the final active admin cannot be deactivated or demoted.
 - **Accounts:** approves reimbursement, records payment reference and date, and sees the payment queue. Multiple active accounts can have the Accounts role.
 
-Voucher actions are checked on the server. A reviewer cannot review their own voucher. The sequence is HR review → Admin approval → Accounts approval → payment recorded → submitting employee confirms receipt → closed. User accounts can be added, deactivated, reactivated, or reassigned to a role by an Admin. Passwords are stored as scrypt hashes; browser sessions use signed, HTTP-only cookies.
+Voucher actions are checked on the server. The HR, Admin, or Accounts reviewer may verify or approve their own voucher when it reaches that role's stage; the ordered approval sequence is still enforced. A voucher owner cannot reject their own claim or process its payment. The sequence is HR review → Admin approval → Accounts review → Printing → Payment processing → submitting employee confirms receipt → closed.
+
+During Printing, Accounts or Admin enters the approval-note recipient, paying-from account, payment medium, and project name or code when applicable. The project reference defaults to the project selected during voucher creation, or the start location if no project was selected. The approval note includes the DHARTI logo and company name, voucher details, and an expense annexure that lists uploaded bill filenames; the actual bill files remain in the complete-voucher ZIP. Its standard layout stacks the project reference beneath the project name, boxes key details and digital verifications, and reserves separate physical-signature lines near the page bottom. For Admin-created vouchers, the Employee name and signature are omitted from the note; the Admin approval remains recorded in its own signature block. Other notes show the submitter's full name in the Employee signature block. Required in-app approval names are shown as digitally verified. Separate blank physical-signature lines are provided for the Hon. Chairman and Managing Director.
+
+Accounts must print the completed note before continuing to Payment processing. The Printing page remains available to Accounts and Admin across voucher stages for reprints and to prepare notes for already-approved vouchers without changing their status; it also provides a complete-voucher ZIP download containing a printable approval-note HTML, voucher data, and all attached proofs. If approvals or note details are incomplete, the bundle labels the note as a draft. Accounts records a payment reference for account transfers and the payment date when marking payment sent. User accounts can be added, deactivated, reactivated, or reassigned to a role by an Admin. Passwords are stored as scrypt hashes; browser sessions use signed, HTTP-only cookies.
 
 Projects are optional labels on vouchers, managed by Admins. Users are not assigned to projects and project selection does not grant or restrict access. When a project is selected, the origin and destination can be left blank; without a project, both are required. Travel medium options include road, rail, airplane, charter flight, helicopter and ferry/boat.
 
 Proof files accept PDF, PNG and JPEG, with a 10 MB per-file limit. They are stored outside the public web directory and require an authenticated user with voucher access to download.
 
+Each expense line must use one of four categories: Airfare, Public transport, Food or Others. Airfare and Public transport expenses require an attached bill before HR can verify the voucher. Employees mark whether GST is included and enter the full total amount; Accounts is prompted to calculate the GST component during Accounts review. Vouchers record a travel start and end date.
+
 ## Configuration and future hosting
 
 The default bind is `127.0.0.1:3080` for local use. The session cookie is marked Secure for HTTPS requests (including HTTPS forwarded by the local Nginx proxy) and remains usable for office HTTP access. For a server that must accept direct connections from other machines, set `HOST=0.0.0.0`, configure its firewall and network address, and use production secrets and a persistent upload location. `http://localhost:3080` always refers to the device on which the browser is running.
 
-Set `INITIAL_ADMIN_PASSWORD` only for initial setup; after an administrator exists, account management is done from **People & roles**. New users are created by an Admin in the app. User passwords must be 8–12 characters and include at least one letter and one number. `SESSION_SECRET` must be at least 32 characters.
+Set `INITIAL_ADMIN_PASSWORD` only for initial setup; after an administrator exists, account management is done from **People & roles**. People may register themselves from the sign-in screen; the request stays pending until an HR user approves it, at which point RouteBack creates an active Employee account. Rejected requests create no account and may be submitted again. Admins can also continue creating accounts directly. User passwords must be 8–12 characters and include at least one letter and one number. `SESSION_SECRET` must be at least 32 characters.
 
 ## Project layout
 
 ```text
 backend/main.py       FastAPI routes, session auth, role checks and workflow
 backend/database.py   PostgreSQL engine and session handling
-backend/models.py     Users, vouchers, expense lines, attachments and event history
+backend/models.py     Users, registration requests, vouchers and related records
 backend/security.py   Password hashing and verification
 index.html            Sign-in screen and app shell
 styles.css            Responsive app styling

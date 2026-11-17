@@ -14,6 +14,8 @@ const date = (s) =>
         year: "numeric",
       })
     : "—";
+const dateRange = (from, to) =>
+  from && to && from !== to ? `${date(from)} – ${date(to)}` : date(from || to);
 const esc = (s) =>
   String(s ?? "").replace(
     /[&<>"']/g,
@@ -29,6 +31,7 @@ const S = {
   allVouchers: [],
   users: [],
   projects: [],
+  registrationRequests: [],
   proofFiles: [],
   expenseItems: [],
   view: "dashboard",
@@ -61,7 +64,8 @@ function normalise(v) {
     to: v.destination,
     project: v.project_name,
     project_id: v.project_id,
-    date: v.travel_date,
+    date: v.travel_start_date || v.travel_date,
+    endDate: v.travel_end_date || v.travel_date,
     mode: v.medium,
     total: Number(v.amount),
     owner: v.employee_name,
@@ -73,6 +77,7 @@ function normalise(v) {
       x.medium || v.medium,
       x.attachments || [],
       x.id,
+      Boolean(x.is_gst),
     ]),
     proofs: v.attachments || [],
     trail: (v.events || []).map((x) => [
@@ -148,10 +153,19 @@ function toast(msg) {
 function showLogin() {
   S.user = null;
   $("#app").classList.add("hidden");
+  $("#signupScreen").classList.add("hidden");
   $("#loginScreen").classList.remove("hidden");
+}
+function showSignup() {
+  $("#loginScreen").classList.add("hidden");
+  $("#app").classList.add("hidden");
+  $("#signupScreen").classList.remove("hidden");
+  $("#signupError").textContent = "";
+  $("#signupSuccess").classList.add("hidden");
 }
 function showApp() {
   $("#loginScreen").classList.add("hidden");
+  $("#signupScreen").classList.add("hidden");
   $("#app").classList.remove("hidden");
 }
 async function load() {
@@ -161,8 +175,9 @@ async function load() {
   S.queue = d.queue.map(normalise);
   S.allVouchers = (d.all_vouchers || []).map(normalise);
   S.projects = projects;
+  S.registrationRequests = S.user.role === "hr" ? await api("/registrations") : [];
   showApp();
-  render();
+  await render();
 }
 async function boot() {
   try {
@@ -192,6 +207,54 @@ $("#loginForm").addEventListener("submit", async (e) => {
     $("#loginError").textContent = err.message;
   }
 });
+$("#signupLink").onclick = showSignup;
+$("#backToLogin").onclick = () => {
+  $("#signupScreen").classList.add("hidden");
+  $("#loginScreen").classList.remove("hidden");
+};
+$("#signupForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const fields = new FormData(form);
+  const displayName = String(fields.get("display_name") || "").trim();
+  const username = String(fields.get("username") || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ".");
+  const password = String(fields.get("password") || "");
+  const confirmation = String(fields.get("password_confirmation") || "");
+  const error = $("#signupError");
+  const success = $("#signupSuccess");
+  error.textContent = "";
+  success.classList.add("hidden");
+  if (!displayName) {
+    error.textContent = "Enter your full name.";
+    return;
+  }
+  if (!/^[a-z0-9._-]{3,120}$/.test(username)) {
+    error.textContent = "Username: use at least 3 letters, numbers, dots, underscores or hyphens.";
+    return;
+  }
+  if (password.length < 8 || password.length > 12 || !/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+    error.textContent = "Password: use 8–12 characters with at least one letter and one number.";
+    return;
+  }
+  if (password !== confirmation) {
+    error.textContent = "The passwords do not match.";
+    return;
+  }
+  try {
+    const result = await api("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ display_name: displayName, username, password }),
+    });
+    form.reset();
+    success.textContent = result.message;
+    success.classList.remove("hidden");
+  } catch (err) {
+    error.textContent = err.message;
+  }
+});
 async function signOut() {
   try {
     await api("/auth/logout", { method: "POST", body: "{}" });
@@ -206,10 +269,13 @@ function pill(s) {
 }
 function route(v) {
   const journey = [v.from, v.to].filter(Boolean).map(esc).join(" → ");
-  return `<span class="route"><b>${journey || (v.project ? `Project: ${esc(v.project)}` : "Travel claim")}</b><small>${date(v.date)} · ${esc(v.mode)}${v.project && journey ? ` · ${esc(v.project)}` : ""}</small></span>`;
+  return `<span class="route"><b>${journey || (v.project ? `Project: ${esc(v.project)}` : "Travel claim")}</b><small>${dateRange(v.date, v.endDate)} · ${esc(v.mode)}${v.project && journey ? ` · ${esc(v.project)}` : ""}</small></span>`;
 }
 function row(v) {
-  return `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${route(v)}</td><td>${esc(v.purpose)}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`;
+  const gstNotice = S.user?.role === "accounts" && v.status === "Accounts review" && v.lines.some((item) => item[7])
+    ? '<small class="table-secondary">GST calculation required</small>'
+    : "";
+  return `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${route(v)}</td><td>${esc(v.purpose)}${gstNotice}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`;
 }
 function allVisible() {
   return [...S.mine, ...S.queue];
@@ -222,6 +288,7 @@ function timeline(v) {
       "HR review",
       "Admin approval",
       "Accounts review",
+      "Printing",
       "Payment processing",
       "Payment received",
       "Closed",
@@ -232,20 +299,26 @@ function timeline(v) {
 }
 function actionFor(v) {
   let r = S.user.role;
-  if (v.employee_id !== S.user.id && v.status === "HR review" && r === "hr")
+  if (v.status === "HR review" && r === "hr")
     return ["verify", "Verify travel details"];
   if (
-    v.employee_id !== S.user.id &&
     v.status === "Admin approval" &&
     r === "admin"
   )
     return ["approve", "Approve as Admin"];
   if (
-    v.employee_id !== S.user.id &&
     v.status === "Accounts review" &&
     r === "accounts"
   )
     return ["approve", "Approve for payment"];
+  if (
+    v.employee_id !== S.user.id &&
+    v.status === "Printing" &&
+    r === "accounts"
+  )
+    return v.approval_note_printed_at
+      ? ["start_payment", "Continue to payment processing"]
+      : ["print_note", "Print approval note"];
   if (
     v.employee_id !== S.user.id &&
     v.status === "Payment processing" &&
@@ -268,12 +341,12 @@ function applyVoucherFilters(items) {
       (!S.statusFilter || v.status === S.statusFilter) &&
       (!S.projectFilter || String(v.project_id || "") === S.projectFilter) &&
       (!S.ownerFilter || String(v.employee_id || "") === S.ownerFilter) &&
-      (!S.fromFilter || String(v.date || "") >= S.fromFilter) &&
+      (!S.fromFilter || String(v.endDate || v.date || "") >= S.fromFilter) &&
       (!S.toFilter || String(v.date || "") <= S.toFilter);
   });
 }
 function statusFilter(items) {
-  const allStatuses = ["HR review", "Admin approval", "Accounts review", "Payment processing", "Payment received", "Closed", "Rejected"];
+  const allStatuses = ["HR review", "Admin approval", "Accounts review", "Printing", "Payment processing", "Payment received", "Closed", "Rejected"];
   const present = new Set(items.map((v) => v.status));
   return `<select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option>${allStatuses.filter((status) => present.has(status)).map((status) => `<option value="${esc(status)}" ${S.statusFilter === status ? "selected" : ""}>${esc(status)}</option>`).join("")}</select>`;
 }
@@ -330,7 +403,7 @@ function dashboard() {
     : "<th>Voucher</th><th>Employee</th><th>Journey</th><th>Purpose</th><th>Claim</th><th>Status</th><th></th>";
   const recentEmpty = isEmployee ? "You haven’t submitted a travel voucher yet." : "No vouchers have been submitted yet.";
   const next = S.queue[0] || S.mine.find((v) => !["Closed", "Rejected"].includes(v.status));
-  return `${pageHead("SITE TRAVEL CLAIMS", `Welcome, ${esc(S.user.display_name.split(" ")[0])}`, "Your site travel vouchers and reimbursement status.", '<button class="btn btn-primary" id="newVoucher">＋ New voucher</button>')}<section class="metrics ${isAdmin ? "metrics-global" : ""}">${kpis}</section><section class="content-grid"><div class="card"><div class="card-head"><div><h2>${recentHeading}</h2><p>${recentSubheading}</p></div><button class="text-link" data-view="${recentLink}">See all →</button></div><div class="table-wrap"><table><thead><tr>${recentHeaders}</tr></thead><tbody>${recentRows || `<tr><td colspan="${isEmployee ? 6 : 7}" class="empty">${recentEmpty}</td></tr>`}</tbody></table></div></div><div class="card"><div class="card-head"><div><h2>${isEmployee ? "Approval journey" : "Review queue"}</h2><p>${isEmployee ? "Every claim follows the same sequence" : `${queue.length} voucher${queue.length === 1 ? "" : "s"} need your action`}</p></div>${isEmployee ? "" : '<button class="text-link" data-view="approvals">Open queue →</button>'}</div>${isEmployee ? timeline(next) : `<div class="timeline">${queue.slice(0, 4).map((v) => `<div class="step current"><div class="step-dot">•</div><div><b>${esc(v.id)} · ${esc(v.owner)}</b><small>${esc(v.purpose)} · ${esc(v.status)}</small></div></div>`).join("") || '<div class="empty">No vouchers currently need your review.</div>'}</div>`}</div></section><section class="content-grid" style="margin-top:16px"><div class="card"><div class="card-head"><div><h2>Reimbursement steps</h2><p>From site trip to confirmed payment</p></div></div><div class="timeline"><div class="step"><div class="step-dot">1</div><div><b>Employee submits journey, costs and proofs</b><small>Only the submitting employee can view and confirm their own claim.</small></div></div><div class="step"><div class="step-dot">2</div><div><b>HR verifies the claim</b><small>Travel route, purpose, expense details and supporting bills.</small></div></div><div class="step"><div class="step-dot">3</div><div><b>Admin approval · Vipul Sir</b><small>Approved vouchers move to Accounts.</small></div></div><div class="step"><div class="step-dot">4</div><div><b>Accounts approves and records payment</b><small>Employee confirms receipt to close the voucher.</small></div></div></div></div><div class="card"><div class="card-head"><div><h2>Keep proofs ready</h2><p>Receipts and tickets help speed up review.</p></div></div><div class="detail-body"><div class="banner">Attach receipts, tickets, tolls, parking bills and other site travel proofs with each voucher.</div><button class="btn btn-primary" id="newVoucher2">＋ Create a travel voucher</button></div></div></section>`;
+  return `${pageHead("SITE TRAVEL CLAIMS", `Welcome, ${esc(S.user.display_name.split(" ")[0])}`, "Your site travel vouchers and reimbursement status.", '<button class="btn btn-primary" id="newVoucher">＋ New voucher</button>')}<section class="metrics ${isAdmin ? "metrics-global" : ""}">${kpis}</section><section class="content-grid"><div class="card"><div class="card-head"><div><h2>${recentHeading}</h2><p>${recentSubheading}</p></div><button class="text-link" data-view="${recentLink}">See all →</button></div><div class="table-wrap"><table><thead><tr>${recentHeaders}</tr></thead><tbody>${recentRows || `<tr><td colspan="${isEmployee ? 6 : 7}" class="empty">${recentEmpty}</td></tr>`}</tbody></table></div></div><div class="card"><div class="card-head"><div><h2>${isEmployee ? "Approval journey" : "Review queue"}</h2><p>${isEmployee ? "Every claim follows the same sequence" : `${queue.length} voucher${queue.length === 1 ? "" : "s"} need your action`}</p></div>${isEmployee ? "" : '<button class="text-link" data-view="approvals">Open queue →</button>'}</div>${isEmployee ? timeline(next) : `<div class="timeline">${queue.slice(0, 4).map((v) => `<div class="step current"><div class="step-dot">•</div><div><b>${esc(v.id)} · ${esc(v.owner)}</b><small>${esc(v.purpose)} · ${esc(v.status)}${S.user.role === "accounts" && v.status === "Accounts review" && v.lines.some((item) => item[7]) ? " · GST calculation required" : ""}</small></div></div>`).join("") || '<div class="empty">No vouchers currently need your review.</div>'}</div>`}</div></section><section class="content-grid" style="margin-top:16px"><div class="card"><div class="card-head"><div><h2>Reimbursement steps</h2><p>From site trip to confirmed payment</p></div></div><div class="timeline"><div class="step"><div class="step-dot">1</div><div><b>Employee submits journey, costs and proofs</b><small>Only the submitting employee can view and confirm their own claim.</small></div></div><div class="step"><div class="step-dot">2</div><div><b>HR verifies the claim</b><small>Travel route, purpose, expense details and supporting bills.</small></div></div><div class="step"><div class="step-dot">3</div><div><b>Admin approval · Vipul Sir</b><small>Approved vouchers move to Accounts.</small></div></div><div class="step"><div class="step-dot">4</div><div><b>Accounts approves and records payment</b><small>Employee confirms receipt to close the voucher.</small></div></div></div></div><div class="card"><div class="card-head"><div><h2>Keep proofs ready</h2><p>Receipts and tickets help speed up review.</p></div></div><div class="detail-body"><div class="banner">Attach receipts, tickets, tolls, parking bills and other site travel proofs with each voucher.</div><button class="btn btn-primary" id="newVoucher2">＋ Create a travel voucher</button></div></div></section>`;
 }
 function vouchersPage() {
   const rows = applyVoucherFilters(S.mine);
@@ -338,7 +411,7 @@ function vouchersPage() {
 }
 function allVouchersPage() {
   const rows = applyVoucherFilters(S.allVouchers);
-  const allRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${route(v)}</td><td>${esc(v.purpose)}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`;
+  const allRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${route(v)}</td><td>${esc(v.purpose)}${S.user.role === "accounts" && v.status === "Accounts review" && v.lines.some((item) => item[7]) ? '<small class="table-secondary">GST calculation required</small>' : ""}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`;
   return `${pageHead("VOUCHER REGISTER", "All vouchers", "Follow every employee voucher through review, payment and closure.", "")}${voucherFilters(S.allVouchers, "Search voucher, employee or journey…", `${rows.length} of ${S.allVouchers.length} vouchers`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee</th><th>Journey</th><th>Purpose</th><th>Claim</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(allRow).join("") || '<tr><td colspan="7" class="empty">No vouchers match these filters.</td></tr>'}</tbody></table></div></div>`;
 }
 function approvalsPage() {
@@ -351,13 +424,17 @@ function paymentsPage() {
   const actionable = source.filter((v) => actionFor(v));
   const selected = S.paymentTab === "history" ? history : actionable;
   const rows = applyVoucherFilters(selected);
-  const paymentRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${route(v)}</td><td>${esc(v.purpose)}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`;
+  const paymentRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${route(v)}</td><td>${esc(v.purpose)}${S.user.role === "accounts" && v.status === "Accounts review" && v.lines.some((item) => item[7]) ? '<small class="table-secondary">GST calculation required</small>' : ""}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td><td><button class="btn btn-small" data-open="${esc(v.id)}">View</button></td></tr>`;
   return `${pageHead("REIMBURSEMENTS", "Payments", "Track every voucher and focus on the actions waiting for your role.", "")}<div class="view-tabs" role="tablist"><button class="view-tab ${S.paymentTab === "action" ? "active" : ""}" data-payment-tab="action">Action required <span>${actionable.length}</span></button><button class="view-tab ${S.paymentTab === "history" ? "active" : ""}" data-payment-tab="history">All vouchers <span>${history.length}</span></button></div>${voucherFilters(selected, "Search voucher, employee or journey…", `${rows.length} of ${selected.length} records`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee</th><th>Journey</th><th>Purpose</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(paymentRow).join("") || `<tr><td colspan="7" class="empty">${S.paymentTab === "action" ? "No vouchers currently need your action." : "No voucher records match these filters."}</td></tr>`}</tbody></table></div></div>`;
+}
+function printingPage() {
+  const rows = applyVoucherFilters(S.allVouchers);
+  return `${pageHead("ACCOUNTS", "Printing & voucher files", "Open any voucher to print or reprint its approval note, or download its complete bundle.", "")}<div class="banner">The ZIP includes a printable approval-note HTML file, voucher details, and every attached proof. If approvals or note details are incomplete, the note is marked as a draft.</div>${voucherFilters(S.allVouchers, "Search voucher, employee or journey…", `${rows.length} of ${S.allVouchers.length} vouchers`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee</th><th>Journey</th><th>Claim</th><th>Status</th><th>Approval note</th><th></th></tr></thead><tbody>${rows.map((voucher) => `<tr><td>${esc(voucher.id)}</td><td>${esc(voucher.owner)}</td><td>${route(voucher)}</td><td class="amount">${money(voucher.total)}</td><td>${pill(voucher.status)}</td><td>${voucher.approval_note_printed_at ? "Prepared" : "Draft"}</td><td class="user-row-actions"><button class="btn btn-small" data-print-voucher="${esc(voucher.id)}">Open printing</button><button class="btn btn-small" data-download-bundle="${esc(voucher.id)}">Download bundle</button></td></tr>`).join("") || '<tr><td colspan="7" class="empty">No vouchers match these filters.</td></tr>'}</tbody></table></div></div>`;
 }
 function reportsPage() {
   const rows = applyVoucherFilters(S.allVouchers);
-  const reportRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${esc(v.project || "—")}</td><td>${route(v)}</td><td>${date(v.date)}</td><td>${esc(v.medium || "—")}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td></tr>`;
-  return `${pageHead("REPORTING", "Voucher report", "Filter the reimbursement register, then export the matching expense details.", '<button class="btn btn-primary" id="exportFilteredCsv">⇩ Download CSV</button>')}${voucherFilters(S.allVouchers, "Search voucher, employee, location or item…", `${rows.length} of ${S.allVouchers.length} vouchers`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee</th><th>Project</th><th>Journey / location</th><th>Date</th><th>Travel modes</th><th>Claim total</th><th>Status</th></tr></thead><tbody>${rows.map(reportRow).join("") || '<tr><td colspan="8" class="empty">No vouchers match these filters.</td></tr>'}</tbody></table></div></div>`;
+  const reportRow = (v) => `<tr><td><a class="voucher-id" data-open="${esc(v.id)}">${esc(v.id)}</a></td><td>${esc(v.owner)}</td><td>${esc(v.project || "—")}</td><td>${route(v)}</td><td>${dateRange(v.date, v.endDate)}</td><td>${esc(v.medium || "—")}</td><td class="amount">${money(v.total)}</td><td>${pill(v.status)}</td></tr>`;
+  return `${pageHead("REPORTING", "Voucher report", "Filter the reimbursement register, then export the matching expense details.", '<button class="btn btn-primary" id="exportFilteredCsv">⇩ Download CSV</button>')}${voucherFilters(S.allVouchers, "Search voucher, employee, location or item…", `${rows.length} of ${S.allVouchers.length} vouchers`)}<div class="card table-card"><div class="table-wrap"><table><thead><tr><th>Voucher</th><th>Employee</th><th>Project</th><th>Journey / location</th><th>Travel dates</th><th>Travel modes</th><th>Claim total</th><th>Status</th></tr></thead><tbody>${rows.map(reportRow).join("") || '<tr><td colspan="8" class="empty">No vouchers match these filters.</td></tr>'}</tbody></table></div></div>`;
 }
 function exportFilteredCsv() {
   const params = new URLSearchParams();
@@ -382,8 +459,13 @@ function usersPage() {
   return `${pageHead("ADMINISTRATION", "People & roles", "Manage account details, access and sign-in credentials.", "")}<section class="card user-create-card" style="margin-bottom:14px"><div class="card-head"><div><h2>Create an account</h2><p>Every employee has an individual sign-in and private voucher list.</p></div></div><form id="userForm" class="detail-body form-grid" novalidate><div class="form-field"><label>Full name</label><input name="display_name" maxlength="200" placeholder="e.g. Human Resources"></div><div class="form-field"><label>Username</label><input name="username" maxlength="120" autocomplete="off" placeholder="e.g. hr or human.resources"><small class="form-hint">Letters, numbers, dots, underscores and hyphens.</small></div><div class="form-field"><label>Role</label><select name="role"><option value="employee">Employee</option><option value="hr">HR</option><option value="admin">Admin</option><option value="accounts">Accounts</option></select></div><div class="form-field"><label>Initial password · 8–12 characters</label><input name="password" type="password" maxlength="12" autocomplete="new-password" placeholder="Include letters and numbers"></div><div class="form-field full"><div id="userError" class="login-error" role="alert"></div><button class="btn btn-primary" type="submit">＋ Create account</button></div></form></section><section class="card"><div class="card-head"><div><h2>User accounts</h2><p>${S.users.length} accounts · Edit names, usernames, roles and account status.</p></div></div><div class="filters filter-bar user-filters"><input id="userSearch" type="search" placeholder="Search name or username" value="${esc(S.userQuery)}"><select id="userRoleFilter"><option value="">All roles</option>${Object.entries(roleNames).map(([key, name]) => `<option value="${key}" ${S.userRoleFilter === key ? "selected" : ""}>${esc(name)}</option>`).join("")}</select><select id="userStatusFilter"><option value="">All statuses</option><option value="true" ${S.userStatusFilter === "true" ? "selected" : ""}>Active</option><option value="false" ${S.userStatusFilter === "false" ? "selected" : ""}>Inactive</option></select><span class="filter-count">${users.length} of ${S.users.length} accounts</span></div><div class="table-wrap"><table><thead><tr><th>Account</th><th>Role</th><th>Status</th><th>Created</th><th>Manage</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">No accounts match these filters.</td></tr>'}</tbody></table></div></section>`;
 }function projectsPage() {
   return `${pageHead("ADMINISTRATION", "Projects", "Manage project names and the locations employees can select on vouchers.", "")}<div class="banner">Locations are suggestions tied to a project. Employees can still type a different location on any voucher.</div><section class="card" style="margin-bottom:14px"><div class="card-head"><div><h2>Add a project</h2><p>Add optional site or destination locations, one per line.</p></div></div><form id="projectForm" class="detail-body form-grid"><div class="form-field"><label>Project name</label><input name="name" maxlength="200" required placeholder="e.g. North Plant Upgrade"></div><div class="form-field"><label>Locations · optional</label><textarea name="locations" rows="3" placeholder="Main Site&#10;Camp Office&#10;Jetty"></textarea></div><div class="form-field full"><div id="projectError" class="login-error" role="alert"></div><button class="btn btn-primary" type="submit">＋ Add project</button></div></form></section><section class="card"><div class="card-head"><div><h2>Selectable projects</h2><p>${S.projects.length} active project${S.projects.length === 1 ? "" : "s"}</p></div></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Voucher locations</th><th></th></tr></thead><tbody>${S.projects.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td>${(p.locations || []).map((location) => `<span class="location-tag">${esc(location)}</span>`).join("") || '<span class="subhead">No saved locations</span>'}</td><td><button class="btn btn-small" data-project-edit="${p.id}">Edit project</button></td></tr>`).join("") || '<tr><td colspan="3" class="empty">No projects added yet.</td></tr>'}</tbody></table></div></section>`;
+}function registrationsPage() {
+  const rows = S.registrationRequests.map((registration) =>
+    `<tr><td><b>${esc(registration.display_name)}</b><small class="table-secondary">${esc(registration.username)}</small></td><td>${date(registration.submitted_at.slice(0, 10))}</td><td class="user-row-actions"><button class="btn btn-small btn-primary" data-registration-approve="${esc(registration.id)}">Approve & create account</button><button class="btn btn-small" data-registration-reject="${esc(registration.id)}">Reject</button></td></tr>`,
+  ).join("");
+  return `${pageHead("HR REVIEW", "Employee sign-ups", "Approve requests to create active employee accounts, or reject them with a reason.", "")}<div class="banner">Only an approved request receives an account ID. Applicants cannot choose their role; approved accounts are Employees.</div><section class="card"><div class="card-head"><div><h2>Pending registrations</h2><p>${S.registrationRequests.length} request${S.registrationRequests.length === 1 ? "" : "s"} awaiting review.</p></div></div><div class="table-wrap"><table><thead><tr><th>Applicant</th><th>Submitted</th><th>Review</th></tr></thead><tbody>${rows || '<tr><td colspan="3" class="empty">No pending employee registrations.</td></tr>'}</tbody></table></div></section>`;
 }function miscPage() {
-  return `${pageHead("WORKSPACE", "Travel policy", "Guidance for submitting a complete site travel claim.", "")}<div class="content-grid"><div class="card"><div class="card-head"><div><h2>What to include</h2><p>Help reviewers verify your claim.</p></div></div><div class="detail-body"><div class="activity"><b>Trip details</b><small>From and to locations, travel date, mode and site visit purpose.</small></div><div class="activity"><b>Expense breakdown</b><small>Fare, mileage, tolls, parking and other travel costs as separate items.</small></div><div class="activity"><b>Supporting proofs</b><small>Receipts, tickets and other supporting documents.</small></div></div></div><div class="card"><div class="card-head"><div><h2>Approval route</h2><p>Configured for this standalone site.</p></div></div><div class="detail-body"><div class="activity"><b>1 · HR review</b><small>Any active HR user can verify a submitted voucher.</small></div><div class="activity"><b>2 · Admin approval</b><small>Any active Admin can approve after HR verification.</small></div><div class="activity"><b>3 · Accounts review</b><small>Any active Accounts user can approve and record payment.</small></div><div class="activity"><b>4 · Employee confirmation</b><small>Only the voucher owner can confirm receipt and close it.</small></div></div></div></div>`;
+  return `${pageHead("WORKSPACE", "Travel policy", "Guidance for submitting a complete site travel claim.", "")}<div class="content-grid"><div class="card"><div class="card-head"><div><h2>What to include</h2><p>Help reviewers verify your claim.</p></div></div><div class="detail-body"><div class="activity"><b>Trip details</b><small>From and to locations, travel date range, mode and site visit purpose.</small></div><div class="activity"><b>Expense breakdown</b><small>Choose Airfare, Public transport, Food or Others. Add a bill for every airfare or public transport expense.</small></div><div class="activity"><b>GST</b><small>Mark whether GST is included and enter the total amount. Accounts will calculate the GST component during review.</small></div><div class="activity"><b>Supporting proofs</b><small>Attach receipts, tickets and other supporting documents.</small></div></div></div><div class="card"><div class="card-head"><div><h2>Approval route</h2><p>Configured for this standalone site.</p></div></div><div class="detail-body"><div class="activity"><b>1 · HR review</b><small>Any active HR user can verify a submitted voucher.</small></div><div class="activity"><b>2 · Admin approval</b><small>Any active Admin can approve after HR verification.</small></div><div class="activity"><b>3 · Accounts review</b><small>Any active Accounts user can approve and calculate GST where it is marked as included.</small></div><div class="activity"><b>4 · Printing</b><small>Accounts completes missing approval-note details and prints it with signatures in Employee, HR, Admin, Accounts order.</small></div><div class="activity"><b>5 · Payment processing</b><small>Accounts records payment date and transfer reference when applicable.</small></div><div class="activity"><b>6 · Employee confirmation</b><small>Only the voucher owner can confirm receipt and close it.</small></div></div></div></div>`;
 }
 async function refreshUsers() {
   if (S.user.role === "admin") S.users = await api("/users");
@@ -391,12 +473,17 @@ async function refreshUsers() {
 async function refreshProjects() {
   S.projects = await api("/projects");
 }
+async function refreshRegistrations() {
+  S.registrationRequests = S.user.role === "hr" ? await api("/registrations") : [];
+}
 async function render() {
   const names = {
     dashboard: "Overview",
     vouchers: "My vouchers",
     allVouchers: "All vouchers",
     approvals: "Approvals",
+    registrations: "Employee sign-ups",
+    printing: "Printing",
     payments: "Payments",
     reports: "Reports",
     people: "People & roles",
@@ -410,6 +497,8 @@ async function render() {
   $("#topAvatar").textContent = $("#sideAvatar").textContent;
   $("#topName").textContent = S.user.display_name;
   const isAdmin = S.user.role === "admin";
+  const isHr = S.user.role === "hr";
+  const canPrint = ["admin", "accounts"].includes(S.user.role);
   const canSeeAll = ["admin", "hr", "accounts"].includes(S.user.role);
   const canSeeReports = ["admin", "hr", "accounts"].includes(S.user.role);
   $("#usersNav").classList.toggle("hidden", !isAdmin);
@@ -418,11 +507,17 @@ async function render() {
   $("#reportsNav").classList.toggle("hidden", !canSeeReports);
   const canReview = ["hr", "admin", "accounts"].includes(S.user.role);
   $("#approvalsNav").classList.toggle("hidden", !canReview);
+  $("#printingNav").classList.toggle("hidden", !canPrint);
+  $("#registrationsNav").classList.toggle("hidden", !isHr);
+  if (S.view === "registrations" && isHr) await refreshRegistrations();
+  $("#registrationCount").textContent = S.registrationRequests.length;
   $("#approvalCount").textContent = S.queue.filter((v) => actionFor(v)).length;
   $("#myCount").textContent = S.mine.length;
   const mobile = [["dashboard", "⌂", "Home"], ["vouchers", "▤", "Vouchers"]];
   if (canSeeAll) mobile.push(["allVouchers", "▤", "All"]);
   if (canReview) mobile.push(["approvals", "☷", "Review"]);
+  if (isHr) mobile.push(["registrations", "♙", "Sign-ups"]);
+  if (canPrint) mobile.push(["printing", "▣", "Printing"]);
   mobile.push(["payments", "₹", "Payments"]);
   if (canSeeReports) mobile.push(["reports", "⇩", "Reports"]);
   if (isAdmin) mobile.push(["people", "♙", "People"], ["projects", "⌂", "Projects"]);
@@ -434,6 +529,8 @@ async function render() {
     vouchers: vouchersPage,
     allVouchers: canSeeAll ? allVouchersPage : miscPage,
     approvals: canReview ? approvalsPage : miscPage,
+    registrations: isHr ? registrationsPage : miscPage,
+    printing: canPrint ? printingPage : miscPage,
     payments: paymentsPage,
     reports: canSeeReports ? reportsPage : miscPage,
     people: isAdmin ? usersPage : miscPage,
@@ -474,6 +571,12 @@ function bindPage() {
   const mobileNew = $("#mobileNew");
   if (mobileNew) mobileNew.onclick = showCreate;
   document.querySelectorAll("[data-open]").forEach((button) => (button.onclick = () => openDetail(button.dataset.open)));
+  document.querySelectorAll("[data-print-voucher]").forEach((button) => {
+    button.onclick = () => openDetail(button.dataset.printVoucher);
+  });
+  document.querySelectorAll("[data-download-bundle]").forEach((button) => {
+    button.onclick = () => downloadVoucherBundle(button.dataset.downloadBundle);
+  });
   const search = $("#search");
   if (search) search.oninput = () => {
     S.query = search.value;
@@ -526,6 +629,8 @@ function bindPage() {
   document.querySelectorAll("[data-project-edit]").forEach((button) => (button.onclick = () => editProject(button.dataset.projectEdit)));
   document.querySelectorAll("[data-user-reset]").forEach((button) => (button.onclick = () => resetPassword(button.dataset.userReset)));
   document.querySelectorAll("[data-user-toggle]").forEach((button) => (button.onclick = () => toggleUser(button.dataset.userToggle, button.dataset.active === "true")));
+ document.querySelectorAll("[data-registration-approve]").forEach((button) => (button.onclick = () => reviewRegistration(button.dataset.registrationApprove, "approve")));
+ document.querySelectorAll("[data-registration-reject]").forEach((button) => (button.onclick = () => rejectRegistration(button.dataset.registrationReject)));
 }function modal(content, id, stack = false) {
   const root = $("#modalRoot");
   const markup = `<div class="modal-backdrop" id="${id}">${content}</div>`;
@@ -542,19 +647,25 @@ function createModal() {
   const projectOptions = S.projects
     .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`)
     .join("");
-  return `<form class="modal" id="voucherForm"><div class="modal-head"><h2>New site travel voucher</h2><button type="button" data-close>×</button></div><div class="modal-content"><div class="banner">Choose a project location or enter one manually. Add expenses separately, each with its own travel mode and proof files.</div><div class="form-grid"><div class="form-field full"><label>Project · optional</label><select name="project_id" id="projectSelect"><option value="">No project selected</option>${projectOptions}</select><small class="form-hint">Projects are selectable labels only; they do not determine user access.</small></div><div class="form-field"><label>From · required without a project</label><input name="origin" id="voucherOrigin" maxlength="240" placeholder="Enter start location"></div><div class="form-field"><label>To / project location · required without a project</label><input name="destination" id="voucherDestination" list="projectLocationOptions" maxlength="240" placeholder="Choose a suggestion or type any location"><datalist id="projectLocationOptions"></datalist><small class="form-hint">Project locations are suggestions; you can enter another location.</small></div><div class="form-field"><label>Travel date</label><input type="date" name="travel_date" required value="${new Date().toISOString().slice(0, 10)}"></div><div class="form-field"><label>Purpose of site visit</label><input name="purpose" required maxlength="2000" placeholder="What was the site visit for?"></div><div class="form-field full"><div class="expense-items-heading"><label>Expense items</label><strong id="expenseTotal">Claim total: ₹0.00</strong></div><div id="expenseItems"></div><button type="button" class="btn btn-small" id="addExpenseItem">+ Add expense item</button></div></div></div><div class="modal-foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Submit voucher →</button></div></form>`;
+  return `<form class="modal" id="voucherForm"><div class="modal-head"><h2>New site travel voucher</h2><button type="button" data-close>×</button></div><div class="modal-content"><div class="banner">Choose a project location or enter one manually. Add expenses separately. A bill is required for Airfare and Public transport.</div><div class="form-grid"><div class="form-field full"><label>Project · optional</label><select name="project_id" id="projectSelect"><option value="">No project selected</option>${projectOptions}</select><small class="form-hint">Projects are selectable labels only; they do not determine user access.</small></div><div class="form-field"><label>From · required without a project</label><input name="origin" id="voucherOrigin" maxlength="240" placeholder="Enter start location"></div><div class="form-field"><label>To / project location · required without a project</label><input name="destination" id="voucherDestination" list="projectLocationOptions" maxlength="240" placeholder="Choose a suggestion or type any location"><datalist id="projectLocationOptions"></datalist><small class="form-hint">Project locations are suggestions; you can enter another location.</small></div><div class="form-field"><label>Travel from</label><input type="date" name="travel_date" id="travelStartDate" required value="${new Date().toISOString().slice(0, 10)}"></div><div class="form-field"><label>Travel to</label><input type="date" name="travel_end_date" id="travelEndDate" required value="${new Date().toISOString().slice(0, 10)}"></div><div class="form-field full"><label>Purpose of site visit</label><input name="purpose" required maxlength="2000" placeholder="What was the site visit for?"></div><div class="form-field full"><div class="expense-items-heading"><label>Expense items</label><strong id="expenseTotal">Claim total: ₹0.00</strong></div><div id="expenseItems"></div><button type="button" class="btn btn-small" id="addExpenseItem">+ Add expense item</button></div></div></div><div class="modal-foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Submit voucher →</button></div></form>`;
 }
 function showCreate() {
   modal(createModal(), "createModal");
-  S.expenseItems = [{ category: "Local travel", description: "", medium: "Taxi / app cab", bill_number: "", amount: "", files: [] }];
+  S.expenseItems = [{ category: "Others", description: "", medium: "Taxi / app cab", bill_number: "", amount: "", is_gst: false, files: [] }];
   renderExpenseItems();
   $("#addExpenseItem").onclick = () => {
-    S.expenseItems.push({ category: "Local travel", description: "", medium: "Taxi / app cab", bill_number: "", amount: "", files: [] });
+    S.expenseItems.push({ category: "Others", description: "", medium: "Taxi / app cab", bill_number: "", amount: "", is_gst: false, files: [] });
     renderExpenseItems();
   };
   const projectSelect = $("#projectSelect");
   const origin = $("#voucherOrigin");
   const destination = $("#voucherDestination");
+  const travelStartDate = $("#travelStartDate");
+  const travelEndDate = $("#travelEndDate");
+  travelEndDate.min = travelStartDate.value;
+  travelStartDate.onchange = () => {
+    travelEndDate.min = travelStartDate.value;
+  };
   const updateProjectLocations = () => {
     const selected = S.projects.find((project) => project.id === projectSelect.value);
     $("#projectLocationOptions").innerHTML = (selected?.locations || []).map((location) => `<option value="${esc(location)}"></option>`).join("");
@@ -573,11 +684,14 @@ function renderExpenseItems() {
   const container = $("#expenseItems");
   if (!container) return;
   container.innerHTML = S.expenseItems
-    .map((item, index) => `<div class="expense-item-card" data-expense-index="${index}"><div class="expense-item-top"><strong>Item ${index + 1}</strong><button type="button" class="btn btn-small" data-remove-expense="${index}" ${S.expenseItems.length === 1 ? "disabled" : ""}>Remove</button></div><div class="form-grid"><div class="form-field"><label>Expense type</label><select data-expense-field="category"><option ${item.category === "Local travel" ? "selected" : ""}>Local travel</option><option ${item.category === "Public transport" ? "selected" : ""}>Public transport</option><option ${item.category === "Airfare" ? "selected" : ""}>Airfare</option><option ${item.category === "Personal vehicle / mileage" ? "selected" : ""}>Personal vehicle / mileage</option><option ${item.category === "Tolls and parking" ? "selected" : ""}>Tolls and parking</option><option ${item.category === "Other travel costs" ? "selected" : ""}>Other travel costs</option></select></div><div class="form-field"><label>Travel mode</label><select data-expense-field="medium">${travelMediums.map((medium) => `<option ${item.medium === medium ? "selected" : ""}>${esc(medium)}</option>`).join("")}</select></div><div class="form-field"><label>Amount (₹)</label><input data-expense-field="amount" type="number" min="0.01" step="0.01" required value="${esc(item.amount)}" placeholder="0.00"></div><div class="form-field"><label>Bill number · optional</label><input data-expense-field="bill_number" maxlength="120" value="${esc(item.bill_number)}" placeholder="e.g. INV-1042"></div><div class="form-field full"><label>Description</label><input data-expense-field="description" maxlength="1000" required value="${esc(item.description)}" placeholder="Fare, toll, parking, etc."></div><div class="form-field full"><label>Receipts & proofs for this item</label><div class="upload"><input type="file" data-expense-proof="${index}" multiple accept=".pdf,.png,.jpg,.jpeg"><div class="selected-proof-list">${item.files.map((file, fileIndex) => `<div class="selected-proof"><span>${esc(file.name)}</span><button type="button" class="btn btn-small" data-remove-item-proof="${fileIndex}">Remove</button></div>`).join("")}</div></div></div></div></div>`)
+    .map((item, index) => `<div class="expense-item-card" data-expense-index="${index}"><div class="expense-item-top"><strong>Item ${index + 1}</strong><button type="button" class="btn btn-small" data-remove-expense="${index}" ${S.expenseItems.length === 1 ? "disabled" : ""}>Remove</button></div><div class="form-grid"><div class="form-field"><label>Expense type</label><select data-expense-field="category"><option ${item.category === "Airfare" ? "selected" : ""}>Airfare</option><option ${item.category === "Public transport" ? "selected" : ""}>Public transport</option><option ${item.category === "Food" ? "selected" : ""}>Food</option><option ${item.category === "Others" ? "selected" : ""}>Others</option></select></div><div class="form-field"><label>Travel mode</label><select data-expense-field="medium">${travelMediums.map((medium) => `<option ${item.medium === medium ? "selected" : ""}>${esc(medium)}</option>`).join("")}</select></div><div class="form-field"><label>Amount (₹) · total${item.is_gst ? ", including GST" : ""}</label><input data-expense-field="amount" type="number" min="0.01" step="0.01" required value="${esc(item.amount)}" placeholder="0.00"></div><div class="form-field"><label>GST included?</label><select data-expense-field="is_gst"><option value="false" ${!item.is_gst ? "selected" : ""}>No</option><option value="true" ${item.is_gst ? "selected" : ""}>Yes</option></select><small class="form-hint">When Yes, enter the full bill total including GST; Accounts calculates the GST component.</small></div><div class="form-field"><label>Bill number · optional</label><input data-expense-field="bill_number" maxlength="120" value="${esc(item.bill_number)}" placeholder="e.g. INV-1042"></div><div class="form-field full"><label>Description</label><input data-expense-field="description" maxlength="1000" required value="${esc(item.description)}" placeholder="Fare, meal, etc."></div><div class="form-field full"><label>Bill / receipt${["Airfare", "Public transport"].includes(item.category) ? " · required" : " · optional"}</label><div class="upload"><input type="file" data-expense-proof="${index}" ${["Airfare", "Public transport"].includes(item.category) && !item.files.length ? "required" : ""} multiple accept=".pdf,.png,.jpg,.jpeg"><div class="selected-proof-list">${item.files.map((file, fileIndex) => `<div class="selected-proof"><span>${esc(file.name)}</span><button type="button" class="btn btn-small" data-remove-item-proof="${fileIndex}">Remove</button></div>`).join("")}</div></div></div></div></div>`)
     .join("");
   container.querySelectorAll("[data-expense-field]").forEach((field) => {
     field.addEventListener("input", updateExpenseField);
-    field.addEventListener("change", updateExpenseField);
+    field.addEventListener("change", (event) => {
+      updateExpenseField(event);
+      if (field.dataset.expenseField === "category" || field.dataset.expenseField === "is_gst") renderExpenseItems();
+    });
   });
   container.querySelectorAll("[data-remove-expense]").forEach((button) => {
     button.onclick = () => {
@@ -607,7 +721,10 @@ function renderExpenseItems() {
 function updateExpenseField(event) {
   const card = event.target.closest("[data-expense-index]");
   const field = event.target.dataset.expenseField;
-  if (card && field) S.expenseItems[Number(card.dataset.expenseIndex)][field] = event.target.value;
+  if (card && field) {
+    const value = field === "is_gst" ? event.target.value === "true" : event.target.value;
+    S.expenseItems[Number(card.dataset.expenseIndex)][field] = value;
+  }
   updateExpenseTotal();
 }
 function updateExpenseTotal() {
@@ -634,6 +751,17 @@ async function submitVoucher(e) {
   e.preventDefault();
   let form = e.currentTarget,
     f = new FormData(form);
+  const missingBill = S.expenseItems.some(
+    (item) => ["Airfare", "Public transport"].includes(item.category) && !item.files.length,
+  );
+  if (missingBill) {
+    toast("Attach a bill for every Airfare and Public transport expense");
+    return;
+  }
+  if (f.get("travel_end_date") < f.get("travel_date")) {
+    toast("Travel to date must be on or after the Travel from date");
+    return;
+  }
   try {
     let v = await api("/vouchers", {
       method: "POST",
@@ -642,6 +770,7 @@ async function submitVoucher(e) {
         origin: f.get("origin") || null,
         destination: f.get("destination") || null,
         travel_date: f.get("travel_date"),
+        travel_end_date: f.get("travel_end_date"),
         purpose: f.get("purpose"),
         expenses: S.expenseItems.map((item) => ({
           category: item.category,
@@ -649,6 +778,7 @@ async function submitVoucher(e) {
           medium: item.medium,
           bill_number: item.bill_number || null,
           amount: item.amount,
+          is_gst: item.is_gst,
         })),
       }),
     });
@@ -678,10 +808,18 @@ async function openDetail(id) {
     let roleAction = actionFor(v);
     if (roleAction && roleAction[0] === "mark_paid")
       $("[data-action=markPaid]").onclick = () => advance(v, "mark_paid");
-    else if (roleAction) {
+    else if (roleAction && roleAction[0] === "start_payment")
+      $("[data-action=startPayment]").onclick = () => advance(v, "start_payment");
+    else if (roleAction && roleAction[0] !== "print_note") {
       let btn = $("[data-action=advance]");
       if (btn) btn.onclick = () => advance(v, roleAction[0]);
     }
+    const printNoteButton = $("[data-action=printNote]");
+    if (printNoteButton) printNoteButton.onclick = () => printApprovalNote(v);
+    const reprintNoteButton = $("[data-action=reprintNote]");
+    if (reprintNoteButton) reprintNoteButton.onclick = () => printApprovalNote(v, true);
+    const bundleButton = $("[data-action=downloadBundle]");
+    if (bundleButton) bundleButton.onclick = () => downloadVoucherBundle(v.id);
     let reject = $("[data-action=reject]");
     if (reject) reject.onclick = () => rejectVoucher(v);
     document.querySelectorAll("[data-preview-file]").forEach((button) => {
@@ -710,6 +848,35 @@ function openPreview(id, name, contentType) {
     "proofPreviewModal",
     true,
   );
+}
+async function downloadVoucherBundle(id) {
+  try {
+    const response = await fetch(
+      `/api/vouchers/${encodeURIComponent(id)}/bundle`,
+      { credentials: "same-origin" },
+    );
+    if (!response.ok) {
+      if (response.status === 401) showLogin();
+      let data = {};
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+      throw new Error(data.detail || `Download failed (${response.status})`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${id}-complete.zip`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (err) {
+    toast(err.message);
+  }
 }
 async function uploadProofs(voucherId, files) {
   try {
@@ -749,22 +916,267 @@ function detail(v) {
         (S.user.role === "accounts" && v.status === "Accounts review"));
   const proofMarkup = (f) => `<div class="proof proof-file"><strong>${esc(f.name)}</strong><div class="proof-actions"><button type="button" class="btn btn-small" data-preview-file="${f.id}" data-file-name="${esc(f.name)}" data-file-type="${esc(f.content_type)}">View</button><a class="btn btn-small" href="/api/attachments/${f.id}?download=true">Download</a></div></div>`;
   const attachments = v.proofs.filter((file) => !file.expense_line_id).map(proofMarkup).join("") || '<div class="proof">No unassigned proof files</div>';
-  const expenseBreakdown = v.lines.map((item) => `<div class="expense-detail-row"><div class="expense-detail-main"><b>${esc(item[0])}</b><span>${esc(item[1])} · ${esc(item[4] || "Travel mode not recorded")}</span>${item[3] ? `<small>Bill number: ${esc(item[3])}</small>` : ""}<strong>${money(item[2])}</strong></div><div class="expense-detail-proofs">${(item[5] || []).map(proofMarkup).join("") || '<span class="subhead">No proof attached to this item.</span>'}</div>${v.employee_id === S.user.id && v.status === "HR review" ? `<label class="expense-proof-upload">Add proof for this item<input type="file" data-expense-proof-upload="${item[6]}" multiple accept=".pdf,.png,.jpg,.jpeg"></label>` : ""}</div>`).join("");
+  const expenseBreakdown = v.lines.map((item) => `<div class="expense-detail-row"><div class="expense-detail-main"><b>${esc(item[0])}</b><span>${esc(item[1])} · ${esc(item[4] || "Travel mode not recorded")}</span>${item[3] ? `<small>Bill number: ${esc(item[3])}</small>` : ""}${item[7] ? '<small>GST included in the submitted total</small>' : ""}<strong>${money(item[2])}</strong></div><div class="expense-detail-proofs">${(item[5] || []).map(proofMarkup).join("") || '<span class="subhead">No proof attached to this item.</span>'}</div>${v.employee_id === S.user.id && v.status === "HR review" ? `<label class="expense-proof-upload">Add proof for this item<input type="file" data-expense-proof-upload="${item[6]}" multiple accept=".pdf,.png,.jpg,.jpeg"></label>` : ""}</div>`).join("");
+  const gstCalculationNotice =
+    S.user.role === "accounts" &&
+    v.status === "Accounts review" &&
+    v.lines.some((item) => item[7])
+      ? '<div class="banner" style="margin-bottom:12px">GST is included in the submitted total for the marked expense items. Accounts: calculate the GST component from those totals; do not add GST again to the claim.</div>'
+      : "";
   let payFields =
     S.user.role === "accounts" &&
     v.status === "Payment processing" &&
     v.employee_id !== S.user.id
-      ? `<div class="form-field" style="margin:12px 0"><label>Payment reference</label><input id="payRef" required placeholder="Bank transfer reference"></div><div class="form-field"><label>Payment date</label><input id="payDate" type="date" required value="${new Date().toISOString().slice(0, 10)}"></div><button class="btn btn-primary" data-action="markPaid" style="margin-top:10px">Record payment sent →</button>`
+      ? `<div class="form-field" style="margin:12px 0"><label>Payment reference${v.payment_method === "cash" ? " · optional" : ""}</label><input id="payRef" ${v.payment_method === "cash" ? "" : "required"} placeholder="${v.payment_method === "cash" ? "Optional reference" : "Bank transfer reference"}"></div><div class="form-field"><label>Payment date</label><input id="payDate" type="date" required value="${new Date().toISOString().slice(0, 10)}"></div><button class="btn btn-primary" data-action="markPaid" style="margin-top:10px">Record payment sent →</button>`
       : "";
-  return `<div class="modal"><div class="modal-head"><h2>Voucher ${esc(v.id)}</h2>${pill(v.status)}<button data-close>×</button></div><div class="modal-content"><div class="banner">${route(v)} <span style="float:right;font-family:'IBM Plex Mono'">${money(v.total)}</span></div><div class="detail-grid"><div><div class="card"><div class="card-head"><div><h2>Trip & expense details</h2></div><span class="subhead">Submitted by ${esc(v.owner)}</span></div><div class="detail-body"><div class="detail-kv"><div class="kv"><label>Purpose</label><b>${esc(v.purpose)}</b></div><div class="kv"><label>Travel date</label><b>${date(v.date)}</b></div><div class="kv"><label>Travel modes</label><b>${esc(v.mode)}</b></div><div class="kv"><label>Claim total</label><b>${money(v.total)}</b></div></div><h3 style="margin-top:18px">Expense items</h3>${expenseBreakdown}<h3 style="margin-top:18px">Other bills & proofs</h3>${attachments}</div></div><div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Activity</h2></div></div>${v.trail.map((x) => `<div class="activity"><b>${esc(x[0])}</b><small>${esc(x[1])}</small></div>`).join("")}</div></div><div><div class="card"><div class="card-head"><div><h2>Approval progress</h2></div></div>${timeline(v)}</div><div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Next action</h2><p>${action ? esc(action[1]) : "No action is available for your account at this step."}</p></div></div><div class="detail-body">${action && action[0] !== "mark_paid" ? `<button class="btn btn-primary" data-action="advance">${esc(action[1])} →</button>` : ""}${payFields}${canReject ? '<div style="margin-top:9px"><button class="btn btn-small" data-action="reject">Reject voucher</button></div>' : ""}${v.status === "Payment received" ? `<div class="banner" style="margin-top:9px">Payment ref: ${esc(v.payment_reference || "—")} · ${date(v.payment_date)}</div>` : ""}</div></div></div></div></div></div>`;
+  const canPrintNote = ["accounts", "admin"].includes(S.user.role);
+  const noteStatuses = ["Printing", "Payment processing", "Payment received", "Closed"];
+  const noteDetailsComplete = Boolean(
+    v.approval_recipient &&
+    v.payment_account &&
+    v.payment_method &&
+    (!v.project || approvalProjectReference(v)),
+  );
+  const canEditNote = noteStatuses.includes(v.status) &&
+    (v.status === "Printing" || !v.approval_note_printed_at || !noteDetailsComplete);
+  const canReprintNote = noteStatuses.includes(v.status) &&
+    v.approval_note_printed_at &&
+    noteDetailsComplete;
+  const noteFields = `<div class="form-field" style="margin:12px 0"><label for="approvalRecipient">Approval note addressed to</label><input id="approvalRecipient" maxlength="200" required value="${esc(v.approval_recipient || "")}" placeholder="Enter recipient name or title"></div>${v.project ? `<div class="form-field"><label for="approvalProjectCode">Project name or code</label><input id="approvalProjectCode" maxlength="80" required value="${esc(approvalProjectReference(v))}" placeholder="Project name or code"></div>` : ""}<div class="form-field"><label for="paymentAccount">Paying from account</label><input id="paymentAccount" maxlength="200" required value="${esc(v.payment_account || "")}" placeholder="Enter bank or cash account name"></div><div class="form-field"><label for="paymentMethod">Payment medium</label><select id="paymentMethod" required><option value="">Choose a payment medium</option><option value="cash" ${v.payment_method === "cash" ? "selected" : ""}>Cash</option><option value="account_transfer" ${v.payment_method === "account_transfer" ? "selected" : ""}>Account transfer</option></select></div><div id="printNoteError" class="login-error" role="alert"></div><button class="btn btn-primary" data-action="printNote" style="margin-top:10px">Print approval note →</button>${S.user.role === "accounts" && v.status === "Printing" && v.approval_note_printed_at ? '<button class="btn" data-action="startPayment" style="margin:10px 0 0 8px">Continue to payment processing →</button>' : ""}`;
+  const printingFields = !canPrintNote
+    ? ""
+    : canEditNote
+      ? `${noteFields}${v.status !== "Printing" ? '<div class="banner" style="margin-top:10px">The voucher has already completed its approval route. Complete any missing note details, then print it without changing the voucher status.</div>' : ""}`
+      : canReprintNote
+        ? `<div class="detail-kv" style="margin:12px 0"><div class="kv"><label>Addressed to</label><b>${esc(v.approval_recipient)}</b></div>${v.project ? `<div class="kv"><label>Project name or code</label><b>${esc(approvalProjectReference(v))}</b></div>` : ""}<div class="kv"><label>Paying from</label><b>${esc(v.payment_account)}</b></div><div class="kv"><label>Payment medium</label><b>${esc(v.payment_method === "account_transfer" ? "Account transfer" : "Cash")}</b></div></div><button class="btn btn-primary" data-action="reprintNote">Reprint approval note →</button>`
+        : `<div class="banner" style="margin:12px 0">${v.status === "Rejected" ? "Rejected vouchers do not have a final approval note to print." : "The approval note is available after HR, Admin and Accounts approvals are complete."}</div><button class="btn" type="button" disabled>Print approval note</button>`;
+  const paymentSummary =
+    v.payment_account &&
+    v.payment_method &&
+    ["Payment processing", "Payment received", "Closed"].includes(v.status)
+      ? `<div class="banner" style="margin-top:9px">${v.status === "Payment processing" ? "Paying from" : "Paid from"} ${esc(v.payment_account)} · ${esc(v.payment_method === "account_transfer" ? "Account transfer" : "Cash")}${v.status === "Payment processing" ? "" : ` · Ref: ${esc(v.payment_reference || "—")} · ${date(v.payment_date)}`}</div>`
+      : "";
+  return `<div class="modal"><div class="modal-head"><h2>Voucher ${esc(v.id)}</h2>${pill(v.status)}<button data-close>×</button></div><div class="modal-content"><div class="banner">${route(v)} <span style="float:right;font-family:'IBM Plex Mono'">${money(v.total)}</span></div><button class="btn btn-small" data-action="downloadBundle" style="margin:12px 0">Download complete voucher (.zip)</button><small class="table-secondary" style="display:block;margin-bottom:12px">Includes the approval note, voucher data, and all attached proofs; unfinished notes are marked as drafts.</small>${gstCalculationNotice}<div class="detail-grid"><div><div class="card"><div class="card-head"><div><h2>Trip & expense details</h2></div><span class="subhead">Submitted by ${esc(v.owner)}</span></div><div class="detail-body"><div class="detail-kv"><div class="kv"><label>Purpose</label><b>${esc(v.purpose)}</b></div><div class="kv"><label>Travel dates</label><b>${dateRange(v.date, v.endDate)}</b></div><div class="kv"><label>Travel modes</label><b>${esc(v.mode)}</b></div><div class="kv"><label>Claim total</label><b>${money(v.total)}</b></div></div><h3 style="margin-top:18px">Expense items</h3>${expenseBreakdown}<h3 style="margin-top:18px">Other bills & proofs</h3>${attachments}</div></div><div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Activity</h2></div></div>${v.trail.map((x) => `<div class="activity"><b>${esc(x[0])}</b><small>${esc(x[1])}</small></div>`).join("")}</div></div><div><div class="card"><div class="card-head"><div><h2>Approval progress</h2></div></div>${timeline(v)}</div><div class="card" style="margin-top:12px"><div class="card-head"><div><h2>${canPrintNote ? "Approval note & printing" : "Next action"}</h2><p>${action ? esc(action[1]) : canPrintNote ? "Print or reprint the completed approval note." : "No action is available for your account at this step."}</p></div></div><div class="detail-body">${action && !["mark_paid", "start_payment", "print_note"].includes(action[0]) ? `<button class="btn btn-primary" data-action="advance">${esc(action[1])} →</button>` : ""}${printingFields}${payFields}${canReject ? '<div style="margin-top:9px"><button class="btn btn-small" data-action="reject">Reject voucher</button></div>' : ""}${paymentSummary}</div></div></div></div></div></div>`;
+}
+function approvalSignatures(v) {
+  const events = v.events || [];
+  const findEvent = (role, action) =>
+    events.find((event) => event.role === role && event.action === action);
+  const employee =
+    v.employee_role === "admin"
+      ? null
+      : events.find(
+          (event) =>
+            event.action === "Submitted" &&
+            event.actor_id === v.employee_id,
+        ) || findEvent("employee", "Submitted");
+  const hr = findEvent("hr", "verify");
+  const admin = findEvent("admin", "approve");
+  const accounts = findEvent("accounts", "approve");
+  const signatures = [
+    { role: "Employee", name: employee?.actor || "", event: employee },
+    { role: "HR Reviewer", name: hr?.actor || "", event: hr },
+    { role: "Admin Approver", name: admin?.actor || "", event: admin },
+    { role: "Accounts Reviewer", name: accounts?.actor || "", event: accounts },
+  ];
+  return v.employee_role === "admin" ? signatures.slice(1) : signatures;
+}
+function approvalProjectReference(v) {
+  return v.approval_project_code || v.project || v.from || "";
+}
+function amountInWords(amount) {
+  const oneToNineteen = [
+    "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight",
+    "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen",
+    "Sixteen", "Seventeen", "Eighteen", "Nineteen",
+  ];
+  const tens = [
+    "", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy",
+    "Eighty", "Ninety",
+  ];
+  const underThousand = (number) => {
+    if (number < 20) return oneToNineteen[number];
+    if (number < 100)
+      return `${tens[Math.floor(number / 10)]}${number % 10 ? ` ${oneToNineteen[number % 10]}` : ""}`;
+    return `${oneToNineteen[Math.floor(number / 100)]} Hundred${number % 100 ? ` ${underThousand(number % 100)}` : ""}`;
+  };
+  const paiseTotal = Math.round(Number(amount || 0) * 100);
+  const rupees = Math.floor(paiseTotal / 100);
+  const paise = paiseTotal % 100;
+  const groups = [
+    [Math.floor(rupees / 10000000), "Crore"],
+    [Math.floor((rupees % 10000000) / 100000), "Lakh"],
+    [Math.floor((rupees % 100000) / 1000), "Thousand"],
+    [Math.floor((rupees % 1000) / 100), "Hundred"],
+  ];
+  const words = groups
+    .filter(([number]) => number)
+    .map(([number, label]) => `${underThousand(number)} ${label}`);
+  if (rupees % 100) words.push(underThousand(rupees % 100));
+  const rupeeWords = words.join(" ") || "Zero";
+  return `${rupeeWords} Rupees${paise ? ` and ${underThousand(paise)} Paise` : ""} Only`;
+}
+function blobDataUrl(blob, description) {
+  const reader = new FileReader();
+  return new Promise((resolve, reject) => {
+    reader.onload = () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error(`Unable to read ${description}.`));
+    };
+    reader.onerror = () =>
+      reject(reader.error || new Error(`Unable to read ${description}.`));
+    reader.readAsDataURL(blob);
+  });
+}
+async function approvalNoteLogoDataUrl() {
+  const response = await fetch("/logo.png");
+  if (!response.ok) {
+    throw new Error(`Unable to load approval-note logo (${response.status}).`);
+  }
+  return blobDataUrl(await response.blob(), "approval-note logo");
+}
+function approvalNoteDocument(v, logoDataUrl) {
+  const signatures = approvalSignatures(v);
+  const adminCreated = v.employee_role === "admin";
+  const employeeName = adminCreated ? "" : v.owner;
+  const project = v.project || v.from || "Site travel";
+  const projectCode = approvalProjectReference(v) || "—";
+  const currentDate = new Date().toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+  const signatureMarkup = signatures
+    .map((signature) => {
+      const signedAs = signature.role === "Employee" ? "Submitted" : "Approved";
+      const signedDate = signature.event?.at
+        ? `${signedAs} ${date(signature.event.at.slice(0, 10))}`
+        : "Not verified";
+      return `<div class="signature digital"><b class="verified-mark">Digitally verified</b><strong>${esc(signature.name)}</strong><small>${esc(signature.role)} · ${signedDate}</small></div>`;
+    })
+    .join("");
+  const physicalSignatures = [
+    "Managing Director (MD Sir)",
+    "Hon. Chairman",
+  ]
+    .map((title) => `<div class="signature physical"><span class="sign-line"></span><strong>${esc(title)}</strong><small>Physical signature</small></div>`)
+    .join("");
+  const expenseRows = v.lines
+    .map((item, index) => {
+      const billNames = (item[5] || [])
+        .map((file) => file.name)
+        .filter(Boolean)
+        .join(", ");
+      return `<tr><td>${index + 1}</td><td>${esc(v.id)}</td><td>${dateRange(v.date, v.endDate)}</td><td>${esc(employeeName || "—")}</td><td>${esc(project)}</td><td>${esc(item[1])}</td><td>${esc(item[0])}</td><td>${esc(item[3] || "—")}</td><td>${esc(billNames || "No bill attached")}</td><td class="amount">${money(item[2])}</td></tr>`;
+    })
+    .join("");
+  const paymentMethod =
+    v.payment_method === "account_transfer" ? "Account transfer" : "Cash";
+  const projectCodeMarkup =
+    projectCode !== "—" &&
+    projectCode.toLocaleLowerCase() !== project.toLocaleLowerCase()
+      ? `<small class="project-code">${esc(projectCode)}</small>`
+      : "";
+  const purposeLocation =
+    [v.from, v.to].filter(Boolean).join(" → ") || v.project || "Site travel";
+  const subject = `Site travel reimbursement · ${dateRange(v.date, v.endDate)}`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Approval note ${esc(v.id)}</title><style>
+    @page{size:A4 portrait;margin:14mm}*{box-sizing:border-box}body{margin:0;color:#202b30;font:11px/1.45 Arial,sans-serif}.page{width:100%}.approval-page{min-height:267mm;display:flex;flex-direction:column}.note-header{position:relative;text-align:center;margin-bottom:8px}.brand-lockup{display:flex;align-items:center;justify-content:center;gap:8px;margin:0 auto 4px}.brand-mark{width:55px;height:29px;overflow:hidden;flex:0 0 auto}.note-logo{display:block;width:55px;height:auto;margin:0}.company-name{font-size:18px;font-weight:bold;letter-spacing:1.2px;color:#b11f45}.serial{position:absolute;right:0;top:3px;font-size:7px}h1{text-align:center;font-size:19px;letter-spacing:1px;margin:0 0 12px}.meta,.fund,.annexure{width:100%;border-collapse:collapse}.meta{margin:9px 0}.meta td{border:1px solid #89969b;padding:5px 7px;vertical-align:top}.meta td:first-child,.meta td:nth-child(3){font-weight:bold;white-space:nowrap;width:75px}.meta td:nth-child(2){width:38%}.section-title{font-size:12px;font-weight:bold;margin:13px 0 6px}.fund th,.fund td,.annexure th,.annexure td{border:1px solid #89969b;padding:5px;text-align:left;vertical-align:top}.fund th,.annexure th{background:#edf1f2}.fund th:first-child{width:48px}.project-code{display:block;font-size:9px;color:#526168}.fund-total{width:42%;margin:0 0 7px auto;border-collapse:collapse}.fund-total td{border:1px solid #89969b;padding:5px 7px}.fund-total td:first-child{font-weight:bold}.fund-total td:last-child{text-align:right;font-weight:bold;white-space:nowrap}.amount{text-align:right!important;white-space:nowrap}.words{margin:8px 0}.purpose{border:1px solid #89969b;padding:8px;min-height:42px;margin:9px 0}.payment{margin:8px 0}.payment p{margin:3px 0}.digital-section{margin-top:12px}.digital-section h2{font-size:12px;margin:0 0 6px;text-transform:uppercase}.digital-signatures{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 10px}.digital-signatures .signature{min-height:54px;border:1px solid #89969b;padding:6px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px;text-align:center;overflow-wrap:anywhere}.digital-signatures .signature:last-child:nth-child(odd){grid-column:1/-1;width:calc(50% - 5px);justify-self:center}.signature strong{font-size:10px}.signature small{font-size:9px;color:#526168}.verified-mark{align-self:center;border-radius:4px;padding:2px 5px;background:#e4f2e8;color:#24623b;font-size:8px;text-transform:uppercase;letter-spacing:.3px}.physical-signatures{display:grid;grid-template-columns:repeat(2,1fr);gap:30px;margin-top:auto;padding-top:34mm}.physical-signatures .signature{min-height:45px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;text-align:center;padding:0 15mm}.sign-line{width:100%;border-top:1px solid #38484e;margin-bottom:5px}.signature strong{font-size:10px}.signature small{font-size:9px;color:#526168}.annexure-page{break-before:page;page-break-before:always}.annexure th,.annexure td{font-size:8px}tfoot{font-weight:bold}@media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.annexure-page{break-before:page;page-break-before:always}}
+    </style></head><body><main class="page"><section class="approval-page"><header class="note-header"><div class="brand-lockup"><span class="brand-mark"><img class="note-logo" src="${esc(logoDataUrl)}" alt="DHARTI logo"></span><span class="company-name">DHARTI</span></div><span class="serial">SR. NO. ${esc(v.id)}</span><h1>APPROVAL NOTE</h1></header><table class="meta"><tr><td>Request No.</td><td>${esc(v.id)}</td><td>Date</td><td>${esc(currentDate)}</td></tr><tr><td>To</td><td colspan="3">${esc(v.approval_recipient)}</td></tr>${employeeName ? `<tr><td>From</td><td colspan="3">${esc(employeeName)}</td></tr>` : ""}<tr><td>Subject</td><td colspan="3">${esc(subject)}</td></tr></table><div class="section-title">Project-wise Fund Requirement</div><table class="fund"><thead><tr><th>Sr. No.</th><th>Project</th><th class="amount">Requested Amount (Rs.)</th></tr></thead><tbody><tr><td>1</td><td><strong>${esc(project)}</strong>${projectCodeMarkup}</td><td class="amount">${money(v.total)}</td></tr></tbody></table><table class="fund-total"><tbody><tr><td>Total Request Amount</td><td>${money(v.total)}</td></tr></tbody></table><p class="words"><strong>Amount in Words:</strong> ${esc(amountInWords(v.total))}</p><div class="purpose"><strong>Purpose:</strong> ${esc(v.purpose)} · ${esc(purposeLocation)}</div><div class="payment">${employeeName ? `<p><strong>Payment To:</strong> ${esc(employeeName)}</p>` : ""}<p><strong>Paid From:</strong> ${esc(v.payment_account)}</p><p><strong>Mode:</strong> ${esc(paymentMethod)}</p></div><section class="digital-section"><h2>Digital Verification</h2><div class="digital-signatures">${signatureMarkup}</div></section><div class="physical-signatures">${physicalSignatures}</div></section><section class="annexure-page"><h1>ANNEXURE</h1><p><strong>Project / Site:</strong> ${esc(project)} · <strong>Project name / code:</strong> ${esc(projectCode)} · <strong>Request No.:</strong> ${esc(v.id)}</p><table class="annexure"><thead><tr><th>Sr.</th><th>Voucher No.</th><th>Travel Date(s)</th><th>Created By</th><th>Site / Location</th><th>Category</th><th>Details</th><th>Bill No.</th><th>Bill</th><th>Amount</th></tr></thead><tbody>${expenseRows || '<tr><td colspan="10">No expense items recorded.</td></tr>'}</tbody><tfoot><tr><td colspan="9">Project Total</td><td class="amount">${money(v.total)}</td></tr></tfoot></table></section></main></body></html>`;
+}
+async function printApprovalNote(v, reprint = false) {
+  const recipient = reprint
+    ? v.approval_recipient || ""
+    : $("#approvalRecipient").value.trim();
+  const account = reprint
+    ? v.payment_account || ""
+    : $("#paymentAccount").value.trim();
+  const method = reprint ? v.payment_method : $("#paymentMethod").value;
+  const projectCode = reprint
+    ? approvalProjectReference(v)
+    : $("#approvalProjectCode")?.value.trim() || approvalProjectReference(v);
+  const missing = [];
+  if (!recipient) missing.push("the note recipient");
+  if (v.project && !projectCode) missing.push("the project name or code");
+  if (!account) missing.push("the paying-from account");
+  if (!method) missing.push("the payment medium");
+  const signatures = approvalSignatures(v);
+  const missingSignatures = signatures.filter((signature) => !signature.name);
+  const error = $("#printNoteError");
+  error.textContent = "";
+  if (missing.length || missingSignatures.length) {
+    const firstMissing = !recipient
+      ? $("#approvalRecipient")
+      : v.project && !projectCode
+        ? $("#approvalProjectCode")
+        : !account
+          ? $("#paymentAccount")
+          : !method
+            ? $("#paymentMethod")
+            : null;
+    error.textContent = [
+      missing.length ? `Complete before printing: ${missing.join(", ")}.` : "",
+      missingSignatures.length
+        ? `Approval name missing for: ${missingSignatures.map((signature) => signature.role).join(", ")}.`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    firstMissing?.focus();
+    return;
+  }
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    error.textContent = "Allow pop-ups for this site to print the approval note.";
+    return;
+  }
+  try {
+    const raw = await api(`/vouchers/${encodeURIComponent(v.id)}/actions`, {
+      method: "POST",
+      body: JSON.stringify(
+        reprint
+          ? { action: "reprint_note" }
+          : {
+              action: "print_note",
+              approval_recipient: recipient,
+              approval_project_code: projectCode || null,
+              payment_account: account,
+              payment_method: method,
+            },
+      ),
+    });
+    const note = normalise(raw);
+    const logoDataUrl = await approvalNoteLogoDataUrl();
+    printWindow.document.open();
+    printWindow.document.write(approvalNoteDocument(note, logoDataUrl));
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+    printWindow.close();
+    await load();
+    await openDetail(v.id);
+    toast(reprint ? "Approval note reprinted" : "Approval note printed");
+  } catch (err) {
+    printWindow.close();
+    error.textContent = err.message;
+  }
 }
 async function advance(v, action) {
   let payload = { action };
+  if (action === "start_payment" && (
+    $("#approvalRecipient").value.trim() !== v.approval_recipient ||
+    ($("#approvalProjectCode")?.value.trim() || "") !== (v.approval_project_code || "") ||
+    $("#paymentAccount").value.trim() !== v.payment_account ||
+    $("#paymentMethod").value !== v.payment_method
+  )) {
+    toast("Print the approval note again after changing its details");
+    return;
+  }
   if (action === "mark_paid") {
     payload.payment_reference = $("#payRef").value.trim();
     payload.payment_date = $("#payDate").value;
-    if (!payload.payment_reference || !payload.payment_date) {
-      toast("Enter payment reference and date");
+    if (!payload.payment_date || (v.payment_method !== "cash" && !payload.payment_reference)) {
+      toast(v.payment_method !== "cash" ? "Enter payment reference and date" : "Enter payment date");
       return;
     }
   }
@@ -779,6 +1191,45 @@ async function advance(v, action) {
   } catch (err) {
     toast(err.message);
   }
+}
+async function reviewRegistration(id, action) {
+  try {
+    const result = await api(`/registrations/${encodeURIComponent(id)}/review`, {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    });
+    await load();
+    toast(action === "approve"
+      ? `${result.user.display_name} approved; employee account created`
+      : "Registration rejected");
+  } catch (err) {
+    toast(err.message);
+  }
+}
+async function rejectRegistration(id) {
+  const registration = S.registrationRequests.find((item) => item.id === id);
+  if (!registration) return;
+  modal(`<form class="modal" id="rejectRegistrationForm"><div class="modal-head"><h2>Reject registration</h2><button type="button" data-close>×</button></div><div class="modal-content"><div class="banner">Rejecting ${esc(registration.display_name)}’s request will not create an account. They may register again later.</div><div class="form-field"><label>Reason for rejection</label><textarea name="note" required maxlength="2000" placeholder="Explain why this registration cannot be approved"></textarea></div><div id="registrationRejectError" class="login-error" role="alert"></div></div><div class="modal-foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Reject registration</button></div></form>`, "rejectRegistrationModal");
+  const form = $("#rejectRegistrationForm");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const note = String(new FormData(form).get("note") || "").trim();
+    if (!note) {
+      $("#registrationRejectError").textContent = "Enter a reason for rejecting this registration.";
+      return;
+    }
+    try {
+      await api(`/registrations/${encodeURIComponent(id)}/review`, {
+        method: "POST",
+        body: JSON.stringify({ action: "reject", note }),
+      });
+      $("#modalRoot").innerHTML = "";
+      await load();
+      toast("Registration rejected");
+    } catch (err) {
+      $("#registrationRejectError").textContent = err.message;
+    }
+  };
 }
 async function rejectVoucher(v) {
   modal(`<form class="modal" id="rejectForm"><div class="modal-head"><h2>Reject voucher ${esc(v.id)}</h2><button type="button" data-close>×</button></div><div class="modal-content"><div class="banner">The employee will see this reason with the rejected voucher.</div><div class="form-field"><label>Reason for rejection</label><textarea name="note" required maxlength="2000" placeholder="Explain why this voucher cannot be approved"></textarea></div><div id="rejectError" class="login-error"></div></div><div class="modal-foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Reject voucher</button></div></form>`, "rejectModal");

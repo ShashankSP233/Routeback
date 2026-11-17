@@ -479,6 +479,7 @@ tbody tr:hover {
 }
 .pill-admin-approval,
 .pill-accounts-review,
+.pill-printing,
 .pill-payment-processing {
   background: var(--blue-light);
   color: var(--blue);
@@ -681,6 +682,7 @@ tbody tr:hover {
   background: #191b1bb3;
   display: grid;
   place-items: center;
+  align-items: safe center;
   padding: 20px;
   z-index: 20;
 }
@@ -968,6 +970,7 @@ tbody tr:hover {
   display: grid;
   place-items: center;
   padding: 20px;
+  overflow-y: auto;
 }
 .login-card {
   width: min(390px, 100%);
@@ -1014,6 +1017,18 @@ tbody tr:hover {
 .login-card .btn {
   width: 100%;
   margin-top: 12px;
+}
+.login-link {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 .login-error {
   color: var(--red);

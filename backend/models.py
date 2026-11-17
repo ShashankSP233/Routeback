@@ -20,10 +20,17 @@ class Status(StrEnum):
     HR_REVIEW = "HR review"
     ADMIN_APPROVAL = "Admin approval"
     ACCOUNTS_REVIEW = "Accounts review"
+    PRINTING = "Printing"
     PAYMENT_PROCESSING = "Payment processing"
     PAYMENT_RECEIVED = "Payment received"
     CLOSED = "Closed"
     REJECTED = "Rejected"
+
+
+class RegistrationStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 def utc_now() -> datetime:
@@ -44,6 +51,30 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now
     )
+
+
+class RegistrationRequest(Base):
+    __tablename__ = "registration_requests"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    username: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(200))
+    password_hash: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), default=RegistrationStatus.PENDING, index=True
+    )
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Project(Base):
@@ -73,6 +104,7 @@ class Voucher(Base):
     origin: Mapped[str | None] = mapped_column(String(240), nullable=True)
     destination: Mapped[str | None] = mapped_column(String(240), nullable=True)
     travel_date: Mapped[date] = mapped_column(Date)
+    travel_end_date: Mapped[date] = mapped_column(Date)
     medium: Mapped[str] = mapped_column(String(100))
     purpose: Mapped[str] = mapped_column(Text)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
@@ -82,6 +114,13 @@ class Voucher(Base):
     )
     payment_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
     payment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    payment_account: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    payment_method: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    approval_recipient: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    approval_project_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    approval_note_printed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now
     )
@@ -107,6 +146,7 @@ class ExpenseLine(Base):
     medium: Mapped[str | None] = mapped_column(String(100), nullable=True)
     bill_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    is_gst: Mapped[bool] = mapped_column(default=False, nullable=False)
     attachments: Mapped[list["Attachment"]] = relationship(
         back_populates="expense_line", cascade="all, delete-orphan"
     )

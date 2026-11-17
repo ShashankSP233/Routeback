@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#1b3a4b">
   <title>RouteBack — Site travel reimbursement</title>
-  <link rel="stylesheet" href="styles.css?v=users-project-locations-item-proofs-reports-20261107">
+  <link rel="stylesheet" href="styles.css?v=digital-approval-printing-20261117">
 </head>
 
 <body>
@@ -21,6 +21,30 @@
         autocomplete="current-password" required>
       <div id="loginError" class="login-error" role="alert"></div>
       <button class="btn btn-primary" type="submit">Sign in →</button>
+      <button class="login-link" id="signupLink" type="button">New here? Register for an account</button>
+    </form>
+  </section>
+  <section id="signupScreen" class="login-screen hidden">
+    <form id="signupForm" class="login-card">
+      <div class="brand"><span class="brand-mark">R</span><span><b>RouteBack</b><small>SITE TRAVEL CLAIMS</small></span>
+      </div>
+      <h1>Request an account</h1>
+      <p>Register as an employee. HR must approve your request before your account is created.</p>
+      <label for="signupName">Full name</label>
+      <input id="signupName" name="display_name" maxlength="200" autocomplete="name" required>
+      <label for="signupUser">Username</label>
+      <input id="signupUser" name="username" minlength="3" maxlength="120" pattern="[A-Za-z0-9._-]+"
+        autocomplete="username" required>
+      <label for="signupPassword">Password</label>
+      <input id="signupPassword" name="password" type="password" minlength="8" maxlength="12"
+        autocomplete="new-password" required>
+      <label for="signupConfirm">Confirm password</label>
+      <input id="signupConfirm" name="password_confirmation" type="password" minlength="8" maxlength="12"
+        autocomplete="new-password" required>
+      <div id="signupError" class="login-error" role="alert"></div>
+      <div id="signupSuccess" class="banner hidden" role="status"></div>
+      <button class="btn btn-primary" type="submit">Submit registration →</button>
+      <button class="login-link" id="backToLogin" type="button">Already registered? Sign in</button>
     </form>
   </section>
   <div id="app" class="hidden">
@@ -34,6 +58,9 @@
         <button class="nav-item hidden" data-view="allVouchers" id="allVouchersNav"><span>▤</span> All vouchers</button>
         <button class="nav-item" data-view="approvals" id="approvalsNav"><span>☷</span> Approvals <i
             id="approvalCount"></i></button>
+        <button class="nav-item hidden" data-view="registrations" id="registrationsNav"><span>♙</span> Employee sign-ups <i
+            id="registrationCount"></i></button>
+        <button class="nav-item hidden" data-view="printing" id="printingNav"><span>▣</span> Printing</button>
         <button class="nav-item" data-view="payments"><span>₹</span> Payments</button>
         <button class="nav-item hidden" data-view="reports" id="reportsNav"><span>⇩</span> Reports</button>
         <div class="nav-label nav-gap">MANAGE</div>
@@ -62,7 +89,7 @@
     <div id="modalRoot"></div>
     <div id="toast" class="toast"></div>
   </div>
-  <script src="app.js?v=users-project-locations-item-proofs-reports-20261107"></script>
+  <script src="app.js?v=admin-note-main-annexure-20261117"></script>
 </body>
 
 </html>
